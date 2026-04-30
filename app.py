@@ -9,16 +9,18 @@ import numpy as np
 import plotly.graph_objects as go
 
 # load spacy models 
-import subprocess, sys
+# import subprocess, sys
 
-@st.cache_resource
-def install_spacy_model():
-    subprocess.run(
-        [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
-        check=True
-    )
+# @st.cache_resource
+# def install_spacy_model():
+#     import spacy
+#     try:
+#         spacy.load("en_core_web_sm")
+#     except OSError:
+#         from spacy.cli import download
+#         download("en_core_web_sm")
 
-install_spacy_model()
+# install_spacy_model()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Mirra", page_icon="🌿", layout="centered")
@@ -118,17 +120,22 @@ def load_nlp_models():
 
 
 def extract_keywords_spacy(text: str) -> list[str]:
-    """Extract noun chunks + named entities with spaCy."""
-    nlp, _ = load_nlp_models()
-    doc = nlp(text)
-    phrases = set()
-    for chunk in doc.noun_chunks:
-        kw = chunk.text.lower().strip()
-        if 2 <= len(kw) <= 30 and not all(t.is_stop for t in chunk):
-            phrases.add(kw)
-    for ent in doc.ents:
-        phrases.add(ent.text.lower().strip())
-    return list(phrases)[:8]
+    """Extract keywords using CountVectorizer."""
+    from sklearn.feature_extraction.text import CountVectorizer
+    try:
+        vec = CountVectorizer(
+            ngram_range=(1, 2),
+            stop_words="english",
+            max_features=20,
+            token_pattern=r"[a-zA-Z]{3,}"
+        )
+        X = vec.fit_transform([text])
+        counts = X.sum(axis=0).A1
+        phrases = vec.get_feature_names_out()
+        ranked = sorted(zip(phrases, counts), key=lambda x: x[1], reverse=True)
+        return [p for p, _ in ranked[:8]]
+    except Exception:
+        return []
 
 
 def get_embeddings(texts: list[str]) -> np.ndarray:
