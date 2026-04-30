@@ -8,6 +8,18 @@ import json
 import numpy as np
 import plotly.graph_objects as go
 
+# load spacy models 
+import subprocess, sys
+
+@st.cache_resource
+def install_spacy_model():
+    subprocess.run(
+        [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+        check=True
+    )
+
+install_spacy_model()
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Mirra", page_icon="🌿", layout="centered")
 
