@@ -121,7 +121,7 @@ def extract_keywords(text: str) -> list[str]:
 def get_embeddings(texts: list[str]) -> np.ndarray:
     if not texts:
         return np.zeros((0, 384))
-    _, embedder = load_nlp_models()
+    embedder = load_nlp_models()  # no longer a tuple
     return embedder.encode(texts, show_progress_bar=False)
 
 
