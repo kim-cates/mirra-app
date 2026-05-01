@@ -8,19 +8,6 @@ import json
 import numpy as np
 import plotly.graph_objects as go
 
-# load spacy models 
-# import subprocess, sys
-
-# @st.cache_resource
-# def install_spacy_model():
-#     import spacy
-#     try:
-#         spacy.load("en_core_web_sm")
-#     except OSError:
-#         from spacy.cli import download
-#         download("en_core_web_sm")
-
-# install_spacy_model()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Mirra", page_icon="🌿", layout="centered")
@@ -107,19 +94,12 @@ ai_client = get_anthropic()
 # ── NLP helpers (lazy-loaded to avoid slow startup) ───────────────────────────
 @st.cache_resource(show_spinner="Loading NLP models…")
 def load_nlp_models():
-    import spacy
     from sentence_transformers import SentenceTransformer
-    try:
-        nlp = spacy.load("en_core_web_sm")
-    except OSError:
-        from spacy.cli import download
-        download("en_core_web_sm")
-        nlp = spacy.load("en_core_web_sm")
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    return nlp, embedder
+    return embedder
 
 
-def extract_keywords_spacy(text: str) -> list[str]:
+def extract_keywords(text: str) -> list[str]:
     """Extract keywords using CountVectorizer."""
     from sklearn.feature_extraction.text import CountVectorizer
     try:
@@ -548,7 +528,7 @@ def get_top_similar_phrases(query: str, phrases: list[str], top_n: int = 25) -> 
 
 def render_dendrogram_tab(rows):
     st.markdown('<p class="title-text">Phrase Dendrogram</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">spaCy noun phrases (3–5 words) · sentence-transformers embeddings · HDBSCAN clustering</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem"> noun phrases (3–5 words) · sentence-transformers embeddings · HDBSCAN clustering</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 8
     if len(rows) < MIN_ENTRIES:
@@ -1014,7 +994,7 @@ def render_today_tab(rows):
 
     st.markdown("""<div class="kw-header">
       <div class="section-label" style="margin-top:1rem">Detected keywords</div>
-      <div class="kw-ai-label">spaCy · AI-extracted</div>
+      <div class="kw-ai-label"> AI-extracted</div>
     </div>""", unsafe_allow_html=True)
 
     kws = st.session_state.get("keywords", [])
@@ -1048,7 +1028,7 @@ def render_today_tab(rows):
         if st.button("Save reflection", type="primary", use_container_width=True):
             if content.strip():
                 with st.spinner("Extracting keywords…"):
-                    kws = extract_keywords_spacy(content)
+                    kws = extract_keywords(content)
                 st.session_state["keywords"] = kws
                 save_reflection(content, mood, kws, st.session_state["user_id"])
                 st.session_state["save_success"] = True
