@@ -930,7 +930,7 @@ Be specific and reference actual keywords and dates from the data. Sound like a 
         showlegend=False,
         margin=dict(l=20, r=20, t=40, b=20),
     )
-    fig_mood_dist.update_yaxes(range=[0, 10])
+    fig_mood_dist.update_yaxes(range=[0, 12])
     st.plotly_chart(fig_mood_dist, use_container_width=True)
 
     # Cosine similarity: find most similar past entry to today's
