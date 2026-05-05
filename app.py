@@ -174,7 +174,7 @@ def run_topic_map(texts: tuple, moods: tuple = None):
     from hdbscan import HDBSCAN
     from sklearn.feature_extraction.text import TfidfVectorizer
 
-    _, embedder = load_nlp_models()
+    embedder = load_nlp_models()
     text_list = [t for t in texts if t and t.strip()]
     if len(text_list) < 5:
         raise ValueError(f"Need at least 5 entries, got {len(text_list)}.")
@@ -1136,3 +1136,346 @@ with tab3:
 
 with tab4:
     render_insights_tab(rows)
+
+
+
+# ── Insights agent ────────────────────────────────────────────────────────────
+def render_insights_tab(rows):
+    st.markdown('<p class="title-text">Insights</p>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">Claude analytics agent · mood trends · keyword correlations · reflection analytics</div>', unsafe_allow_html=True)
+
+    MIN_ENTRIES = 7
+    if len(rows) < MIN_ENTRIES:
+        st.markdown(f'<div class="min-data-msg">⚠️ Insights need at least <strong>{MIN_ENTRIES} entries</strong> to surface patterns. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
+        return
+
+    # Build structured summary for Claude
+    recent = rows[:30]
+    summary_lines = []
+    for r in recent:
+        kws = ", ".join(r.get("keywords") or [])
+        summary_lines.append(f"- {r['entry_date']} | mood: {r['mood']} | keywords: {kws} | excerpt: {r['content'][:100]}")
+    summary_text = "\n".join(summary_lines)
+
+    moods = [r["mood"] for r in recent]
+    avg_m = round(sum(moods) / len(moods), 1)
+    trend = moods[0] - moods[-1]  # newest - oldest (rows are desc)
+
+    all_kws: list[str] = []
+    for r in recent:
+        all_kws.extend([k.lower() for k in (r.get("keywords") or [])])
+    kw_freq = {}
+    for k in all_kws:
+        kw_freq[k] = kw_freq.get(k, 0) + 1
+    top_kws = sorted(kw_freq, key=kw_freq.get, reverse=True)[:10]
+
+    if st.button("✨ Generate insight report", type="primary"):
+        with st.spinner("Analyzing your reflections…"):
+            prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
+
+Here are the user's {len(recent)} most recent reflection entries (newest first):
+{summary_text}
+
+Overall stats:
+- Average mood (these entries): {avg_m}/10
+- Mood trend: {"improving" if trend > 0.5 else "declining" if trend < -0.5 else "stable"}
+- Most frequent keywords: {", ".join(top_kws)}
+
+Write a warm, insightful personal trend report with exactly these 4 sections:
+
+1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them
+2. **Recurring themes** — what topics and phrases keep showing up, and what they might mean
+3. **Notable correlations** — specific connections like "your mood drops when X appears" or "you feel better on days when Y comes up"
+4. **One thing to watch** — a gentle, actionable observation to carry forward
+
+Be specific and reference actual keywords and dates from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences."""
+
+            response = ai_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=900,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            report = response.content[0].text
+
+        st.session_state["insight_report"] = report
+
+    if "insight_report" in st.session_state:
+        st.markdown(f'<div class="insight-card">{st.session_state["insight_report"].replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+
+    # ── Reflection Trends Visualizations ──────────────────────────────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Reflection trends</div>', unsafe_allow_html=True)
+
+    # 1. MOOD TIMESERIES
+    mood_dates = [r["entry_date"] for r in rows]
+    mood_values = [r["mood"] for r in rows]
+    
+    # Calculate trend line using numpy polyfit
+    x_numeric = np.arange(len(mood_values))
+    z = np.polyfit(x_numeric, mood_values, 2)  # 2nd degree polynomial for smooth trend
+    p = np.poly1d(z)
+    trend_line = p(x_numeric)
+    
+    fig_mood = go.Figure()
+    
+    # Add filled area under the curve
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_values,
+        fill="tozeroy",
+        fillcolor="rgba(61, 171, 122, 0.1)",
+        line=dict(color="rgba(0,0,0,0)"),
+        showlegend=False,
+        hoverinfo="skip"
+    ))
+    
+    # Add scatter points
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_values,
+        mode="markers",
+        name="Mood",
+        marker=dict(size=8, color="#3dab7a", opacity=0.85, line=dict(width=1, color="white")),
+        hovertemplate="<b>%{x}</b><br>Mood: %{y:.1f}<extra></extra>"
+    ))
+    
+    # Add trend line
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=trend_line,
+        mode="lines",
+        name="Trend",
+        line=dict(color="#d4850a", width=2.5, dash="dash"),
+        hovertemplate="<b>%{x}</b><br>Trend: %{y:.1f}<extra></extra>"
+    ))
+    
+    fig_mood.update_layout(
+        title="Mood Over Time",
+        xaxis_title="Date",
+        yaxis_title="Mood (1-10)",
+        paper_bgcolor="#f7f6f2",
+        plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=320,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.8)", bordercolor="rgba(200,200,200,0.5)", borderwidth=1)
+    )
+    fig_mood.update_yaxes(range=[0, 10])
+
+    # KEYWORD FREQUENCY BAR CHART
+    fig_kw = None
+    if top_kws:
+        kw_names = [kw.title() for kw in top_kws]
+        kw_counts = [kw_freq[kw] for kw in top_kws]
+        
+        fig_kw = go.Figure()
+        fig_kw.add_trace(go.Bar(
+            x=kw_names,
+            y=kw_counts,
+            marker=dict(color="#e05a3a"),
+            hovertemplate="<b>%{x}</b><br>Occurrences: %{y}<extra></extra>"
+        ))
+        fig_kw.update_layout(
+            title="Top Keywords This Month",
+            xaxis_title="Keyword",
+            yaxis_title="Frequency",
+            paper_bgcolor="#f7f6f2",
+            plot_bgcolor="#f7f6f2",
+            font=dict(family="DM Sans", color="#2a2a2a"),
+            height=320,
+            showlegend=False,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_tickangle=-45,
+        )
+
+    # Display 2-column dashboard
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(fig_mood, use_container_width=True)
+    with col2:
+        if fig_kw:
+            st.plotly_chart(fig_kw, use_container_width=True)
+
+    # ── Mood Distribution with Filters ────────────────────────────────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Mood Distribution & Statistics</div>', unsafe_allow_html=True)
+
+    # Build filter options
+    # 1. Day of week filter
+    days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    row_dates = [datetime.fromisoformat(r["entry_date"]).date() for r in rows]
+    row_dow = [days_of_week[datetime.fromisoformat(r["entry_date"]).weekday()] for r in rows]
+    
+    # 2. Build keyword list with counts (min count of 2)
+    kw_freq_all = {}
+    for r in rows:
+        for kw in (r.get("keywords") or []):
+            kw_lower = kw.lower()
+            kw_freq_all[kw_lower] = kw_freq_all.get(kw_lower, 0) + 1
+    
+    kw_with_min_count = sorted(
+        [kw for kw, count in kw_freq_all.items() if count >= 2],
+        key=lambda x: kw_freq_all[x],
+        reverse=True
+    )
+
+    # Create filter UI
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        selected_days = st.multiselect(
+            "Filter by day of week",
+            days_of_week,
+            default=days_of_week,
+            key="mood_dist_days"
+        )
+    with filter_col2:
+        selected_kws = st.multiselect(
+            "Filter by keywords (min 2 occurrences)",
+            kw_with_min_count,
+            default=kw_with_min_count[:5] if len(kw_with_min_count) > 5 else kw_with_min_count,
+            key="mood_dist_kws"
+        )
+
+    # Apply filters to get filtered mood values
+    filtered_moods = []
+    for i, r in enumerate(rows):
+        # Check day filter
+        if row_dow[i] not in selected_days:
+            continue
+        
+        # Check keyword filter
+        entry_kws = [kw.lower() for kw in (r.get("keywords") or [])]
+        if selected_kws:
+            if not any(kw in entry_kws for kw in selected_kws):
+                continue
+        
+        filtered_moods.append(r["mood"])
+
+    # Create mood distribution chart with filtered data
+    fig_mood_dist = go.Figure()
+    fig_mood_dist.add_trace(go.Violin(
+        y=filtered_moods if filtered_moods else mood_values,
+        name="Mood Distribution",
+        marker=dict(color="#d4850a"),
+        meanline_visible=True,
+        points=False,
+    ))
+    fig_mood_dist.update_layout(
+        title=f"Mood Distribution ({len(filtered_moods)} entries)",
+        yaxis_title="Mood (1-10)",
+        paper_bgcolor="#f7f6f2",
+        plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=300,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    fig_mood_dist.update_yaxes(range=[0, 10])
+    st.plotly_chart(fig_mood_dist, use_container_width=True)
+
+    # Cosine similarity: find most similar past entry to today's
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Similar past entries</div>', unsafe_allow_html=True)
+    today_rows = [r for r in rows if r["entry_date"] == date.today().isoformat()]
+    if today_rows and len(rows) > 1:
+        texts = [r["content"] for r in rows]
+        with st.spinner("Computing similarity…"):
+            embs = get_embeddings(texts)
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        normed = embs / np.where(norms == 0, 1, norms)
+        sims = normed[0] @ normed[1:].T
+        top_idx = np.argsort(sims)[::-1][:3]
+        for idx in top_idx:
+            r = rows[idx + 1]
+            score = round(float(sims[idx]), 2)
+            kws = " · ".join((r.get("keywords") or [])[:4])
+            st.markdown(f"""
+            <div style="background:#f0efe8; border-radius:10px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start; gap:12px">
+                <div>
+                    <div style="font-size:0.82rem; color:#aaa; margin-bottom:3px">{r['entry_date']} · mood {r['mood']}</div>
+                    <div style="font-size:0.92rem; color:#2a2a2a">{r['content'][:100]}…</div>
+                    <div style="font-size:0.8rem; color:#3dab7a; margin-top:4px">{kws}</div>
+                </div>
+                <div style="font-size:0.85rem; font-weight:600; color:#3dab7a; white-space:nowrap">{score} sim</div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="color:#bbb; font-size:0.9rem">Save today\'s reflection first to find similar past entries.</div>', unsafe_allow_html=True)
+
+
+# ── Today's reflection tab ────────────────────────────────────────────────────
+def render_today_tab(rows):
+    total, avg_mood_30d, top_topic, streak, today_row = load_stats(rows)
+    default_content = today_row["content"] if today_row else ""
+    default_mood    = float(today_row["mood"]) if today_row else 6.5
+    if today_row and not st.session_state.get("keywords"):
+        st.session_state["keywords"] = today_row.get("keywords") or []
+
+    today_str  = date.today().strftime("%A · %B") + f" {date.today().day}, {date.today().year}"
+    streak_lbl = f"🔥 {streak}-day streak" if streak > 1 else ("✨ Start your streak!" if streak == 0 else "Day 1 streak!")
+
+    col_title, col_streak = st.columns([3, 1])
+    with col_title:
+        st.markdown(f'<div class="date-label">{today_str}</div>', unsafe_allow_html=True)
+        st.markdown('<p class="title-text">Today\'s reflection</p>', unsafe_allow_html=True)
+    with col_streak:
+        st.markdown(f'<div style="text-align:right;padding-top:4px"><span class="streak-badge">{streak_lbl}</span></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-label">What\'s on your mind?</div>', unsafe_allow_html=True)
+    content = st.text_area("reflection", value=default_content,
+                           placeholder="Write about your day, what you're feeling, what went well or didn't…",
+                           height=140, label_visibility="collapsed")
+
+    st.markdown('<div class="section-label">Mood (1–10)</div>', unsafe_allow_html=True)
+    mood_col, val_col = st.columns([10, 1])
+    with mood_col:
+        mood = st.slider("mood", 1.0, 10.0, default_mood, step=0.5, label_visibility="collapsed")
+    with val_col:
+        st.markdown(f'<div class="mood-value" style="padding-top:18px">{mood}</div>', unsafe_allow_html=True)
+
+    st.markdown("""<div class="kw-header">
+      <div class="section-label" style="margin-top:1rem">Detected keywords</div>
+      <div class="kw-ai-label">spaCy · AI-extracted</div>
+    </div>""", unsafe_allow_html=True)
+
+    kws = st.session_state.get("keywords", [])
+    if kws:
+        highlight = {"anxiety","stress","overwhelm","deadline","support","teamwork","grateful","joy","focus","self-care"}
+        chips = '<div class="keywords-row">'
+        for kw in kws:
+            cls = "kw-chip" if kw.lower() in highlight else "kw-chip kw-chip-neutral"
+            chips += f'<span class="{cls}">{kw}</span>'
+        chips += "</div>"
+        st.markdown(chips, unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="color:#bbb;font-size:0.9rem;margin-top:0.4rem">Keywords will appear after you write your reflection.</div>', unsafe_allow_html=True)
+
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-card-label">Entries</div><div class="stat-card-value">{total}</div><div class="stat-card-sub">total logged</div></div>
+      <div class="stat-card"><div class="stat-card-label">Avg Mood</div><div class="stat-card-value">{avg_mood_30d}</div><div class="stat-card-sub">past 30 days</div></div>
+      <div class="stat-card"><div class="stat-card-label">Top Topic</div><div class="stat-card-value" style="font-size:1.3rem;padding-top:4px">{top_topic}</div><div class="stat-card-sub">this week</div></div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    _, btn_clear, btn_save = st.columns([4, 1.2, 1.8])
+    with btn_clear:
+        if st.button("Clear", use_container_width=True):
+            st.session_state["keywords"] = []
+            st.session_state["save_success"] = False
+            st.rerun()
+    with btn_save:
+        if st.button("Save reflection", type="primary", use_container_width=True):
+            if content.strip():
+                with st.spinner("Extracting keywords…"):
+                    kws = extract_keywords_spacy(content)
+                st.session_state["keywords"] = kws
+                save_reflection(content, mood, kws, st.session_state["user_id"])
+                st.session_state["save_success"] = True
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("Write something first before saving.")
+
+    if st.session_state.get("save_success"):
+        st.markdown('<div class="save-msg">✓ Reflection saved for today.</div>', unsafe_allow_html=True)
+
+
