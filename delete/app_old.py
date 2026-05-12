@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta
 import json
 import numpy as np
 import plotly.graph_objects as go
-from intro_page import render_intro_page, user_has_seen_intro
 
 import oura
 import oura_ui
@@ -773,12 +772,6 @@ def render_login_page():
 if not st.session_state.get("logged_in"):
     render_login_page()
     st.stop()
-    
-
-# After login, before logout button:
-if not st.session_state.get("has_seen_intro") and not user_has_seen_intro(supabase, st.session_state["user_id"]):
-    render_intro_page(supabase, st.session_state["user_id"])
-    st.stop()
 
 # Logout button
 with st.container():
@@ -813,77 +806,12 @@ def render_insights_tab(rows, oura_by_date):
     summary_lines = []
     for r in recent:
         kws = ", ".join(r.get("keywords") or [])
-        # Pair each reflection with that day's Oura metrics (if available) so
-        # Claude can spot correlations like "low HRV days have anxious keywords".
-        oura_row = oura_by_date.get(r["entry_date"]) or {}
-        oura_bits = []
-        if oura_row.get("sleep_score") is not None:
-            oura_bits.append(f"sleep {int(oura_row['sleep_score'])}")
-        if oura_row.get("readiness_score") is not None:
-            oura_bits.append(f"readiness {int(oura_row['readiness_score'])}")
-        if oura_row.get("hrv_avg") is not None:
-            oura_bits.append(f"hrv {int(oura_row['hrv_avg'])}ms")
-        if oura_row.get("resting_hr") is not None:
-            oura_bits.append(f"rhr {int(oura_row['resting_hr'])}")
-        oura_str = f" | {' · '.join(oura_bits)}" if oura_bits else ""
-        summary_lines.append(
-            f"- {r['entry_date']} | mood: {r['mood']}{oura_str} | "
-            f"keywords: {kws} | excerpt: {r['content'][:100]}"
-        )
+        summary_lines.append(f"- {r['entry_date']} | mood: {r['mood']} | keywords: {kws} | excerpt: {r['content'][:100]}")
     summary_text = "\n".join(summary_lines)
 
     moods = [r["mood"] for r in recent]
     avg_m = round(sum(moods) / len(moods), 1)
     trend = moods[0] - moods[-1]  # newest - oldest (rows are desc)
-
-    # Aggregate Oura stats + lightweight mood↔biometric correlations.
-    # Doing the arithmetic in Python (rather than in the prompt) keeps Claude
-    # from having to compute Pearson r on numbers it can easily get wrong.
-    def _aligned(field: str) -> tuple[list[float], list[float]]:
-        xs, ys = [], []
-        for r in recent:
-            v = (oura_by_date.get(r["entry_date"]) or {}).get(field)
-            if v is not None:
-                xs.append(float(v))
-                ys.append(float(r["mood"]))
-        return xs, ys
-
-    def _corr(xs: list[float], ys: list[float]) -> str | None:
-        if len(xs) < 5:
-            return None
-        try:
-            r = float(np.corrcoef(xs, ys)[0, 1])
-        except Exception:
-            return None
-        if np.isnan(r):
-            return None
-        if r > 0.4:
-            strength = "moderate-to-strong positive"
-        elif r > 0.2:
-            strength = "weak positive"
-        elif r < -0.4:
-            strength = "moderate-to-strong negative"
-        elif r < -0.2:
-            strength = "weak negative"
-        else:
-            strength = "essentially none"
-        return f"{strength} (r={r:.2f}, n={len(xs)})"
-
-    oura_summary_lines = []
-    for label, field in [("sleep score", "sleep_score"),
-                         ("readiness", "readiness_score"),
-                         ("HRV", "hrv_avg"),
-                         ("resting HR", "resting_hr")]:
-        xs, ys = _aligned(field)
-        if not xs:
-            continue
-        avg = round(sum(xs) / len(xs), 1)
-        line = f"- Avg {label}: {avg} (n={len(xs)})"
-        c = _corr(xs, ys)
-        if c is not None:
-            line += f" · mood↔{label} correlation: {c}"
-        oura_summary_lines.append(line)
-    oura_block = "\n".join(oura_summary_lines) if oura_summary_lines else "- (no Oura data paired with these entries)"
 
     all_kws: list[str] = []
     for r in recent:
@@ -897,8 +825,7 @@ def render_insights_tab(rows, oura_by_date):
         with st.spinner("Analyzing your reflections…"):
             prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
 
-Here are the user's {len(recent)} most recent reflection entries (newest first). Each line shows the reflection's date, self-reported mood (1–10), and — where available — that day's Oura Ring biometrics: sleep score (0–100), readiness score (0–100), heart-rate variability in milliseconds (higher = better recovery), and resting heart rate in bpm (lower = better recovery).
-
+Here are the user's {len(recent)} most recent reflection entries (newest first):
 {summary_text}
 
 Overall stats:
@@ -906,21 +833,18 @@ Overall stats:
 - Mood trend: {"improving" if trend > 0.5 else "declining" if trend < -0.5 else "stable"}
 - Most frequent keywords: {", ".join(top_kws)}
 
-Biometric averages and mood correlations (Pearson r, computed across days where both mood and the metric exist):
-{oura_block}
-
 Write a warm, insightful personal trend report with exactly these 4 sections:
 
-1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them. Where the data supports it, link mood shifts to biometrics (e.g. "your lowest moods cluster on poor-sleep nights" — but only say this if the dates actually show it).
+1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them
 2. **Recurring themes** — what topics and phrases keep showing up, and what they might mean
-3. **Notable correlations** — specific connections like "your mood drops when X appears" or "high-HRV days tend to mention Y." Use the correlation numbers above as a guide: only call something a real correlation if r is at least 0.3 in magnitude. If the strongest correlation is weak, say so honestly rather than inventing one.
+3. **Notable correlations** — specific connections like "your mood drops when X appears" or "you feel better on days when Y comes up"
 4. **One thing to watch** — a gentle, actionable observation to carry forward
 
-Be specific and reference actual keywords, dates, and biometric values from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences. Do not over-claim causation — Oura biometrics and self-reported mood are correlated signals, not proof one causes the other."""
+Be specific and reference actual keywords and dates from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences."""
 
             response = ai_client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=1100,
+                max_tokens=900,
                 messages=[{"role": "user", "content": prompt}]
             )
             report = response.content[0].text
@@ -937,116 +861,56 @@ Be specific and reference actual keywords, dates, and biometric values from the 
     # 1. MOOD TIMESERIES
     mood_dates = [r["entry_date"] for r in rows]
     mood_values = [r["mood"] for r in rows]
-
-    # Extract Oura HR + HRV data aligned with mood_dates
-    rhr_values = []
-    hrv_values = []
-    for d in mood_dates:
-        oura_row = oura_by_date.get(d)
-        rhr_values.append(float(oura_row["resting_hr"]) if oura_row and oura_row.get("resting_hr") is not None else None)
-        hrv_values.append(float(oura_row["hrv_avg"])    if oura_row and oura_row.get("hrv_avg")    is not None else None)
-
-    # Z-score helper: standardise a series so all 3 metrics share one y-axis.
-    # Hover tooltips still show the original value so the chart stays readable.
-    def _zscore(values: list[float | None]) -> tuple[list[float | None], float, float]:
-        present = [v for v in values if v is not None]
-        if len(present) < 2:
-            return [None] * len(values), 0.0, 1.0
-        mean = float(np.mean(present))
-        std = float(np.std(present)) or 1.0
-        return [((v - mean) / std) if v is not None else None for v in values], mean, std
-
-    mood_z, mood_mean, mood_std = _zscore(mood_values)
-    rhr_z,  _, _ = _zscore(rhr_values)
-    hrv_z,  _, _ = _zscore(hrv_values)
-
-    # Trend line is now computed on z-scored mood so it sits on the same scale.
-    x_numeric = np.arange(len(mood_z))
-    valid_mask = [v is not None for v in mood_z]
-    if sum(valid_mask) >= 3:
-        x_valid = x_numeric[valid_mask]
-        y_valid = [v for v in mood_z if v is not None]
-        z = np.polyfit(x_valid, y_valid, 2)
-        trend_line = np.poly1d(z)(x_numeric)
-    else:
-        trend_line = mood_z
-
+    
+    # Calculate trend line using numpy polyfit
+    x_numeric = np.arange(len(mood_values))
+    z = np.polyfit(x_numeric, mood_values, 2)  # 2nd degree polynomial for smooth trend
+    p = np.poly1d(z)
+    trend_line = p(x_numeric)
+    
     fig_mood = go.Figure()
-
-    # Filled area under mood (z-scored)
+    
+    # Add filled area under the curve
     fig_mood.add_trace(go.Scatter(
-        x=mood_dates, y=mood_z,
+        x=mood_dates, y=mood_values,
         fill="tozeroy",
         fillcolor="rgba(61, 171, 122, 0.1)",
         line=dict(color="rgba(0,0,0,0)"),
         showlegend=False,
         hoverinfo="skip"
     ))
-
-    # Mood markers — hover shows the original 1–10 value, not the z-score.
+    
+    # Add scatter points
     fig_mood.add_trace(go.Scatter(
-        x=mood_dates, y=mood_z,
-        customdata=mood_values,
+        x=mood_dates, y=mood_values,
         mode="markers",
         name="Mood",
         marker=dict(size=8, color="#3dab7a", opacity=0.85, line=dict(width=1, color="white")),
-        hovertemplate="<b>%{x}</b><br>Mood: %{customdata:.1f}<extra></extra>"
+        hovertemplate="<b>%{x}</b><br>Mood: %{y:.1f}<extra></extra>"
     ))
-
-    # Trend (already on z-scale)
+    
+    # Add trend line
     fig_mood.add_trace(go.Scatter(
         x=mood_dates, y=trend_line,
         mode="lines",
         name="Trend",
         line=dict(color="#d4850a", width=2.5, dash="dash"),
-        hoverinfo="skip"
+        hovertemplate="<b>%{x}</b><br>Trend: %{y:.1f}<extra></extra>"
     ))
-
-    # Resting HR — shared axis, hover shows bpm
-    rhr_with_data = [(d, z, raw) for d, z, raw in zip(mood_dates, rhr_z, rhr_values) if z is not None]
-    if rhr_with_data:
-        rhr_dates, rhr_zs, rhr_raws = zip(*rhr_with_data)
-        fig_mood.add_trace(go.Scatter(
-            x=rhr_dates, y=rhr_zs,
-            customdata=rhr_raws,
-            mode="lines+markers",
-            name="Resting HR",
-            line=dict(color="#e05a3a", width=2),
-            marker=dict(size=5, color="#e05a3a"),
-            hovertemplate="<b>%{x}</b><br>Resting HR: %{customdata:.0f} bpm<extra></extra>"
-        ))
-
-    # HRV — shared axis, hover shows ms
-    hrv_with_data = [(d, z, raw) for d, z, raw in zip(mood_dates, hrv_z, hrv_values) if z is not None]
-    if hrv_with_data:
-        hrv_dates, hrv_zs, hrv_raws = zip(*hrv_with_data)
-        fig_mood.add_trace(go.Scatter(
-            x=hrv_dates, y=hrv_zs,
-            customdata=hrv_raws,
-            mode="lines+markers",
-            name="HRV",
-            line=dict(color="#5b6fa6", width=2),
-            marker=dict(size=5, color="#5b6fa6"),
-            hovertemplate="<b>%{x}</b><br>HRV: %{customdata:.0f} ms<extra></extra>"
-        ))
-
+    
     fig_mood.update_layout(
-        title="Mood, Heart Rate & HRV (standardised)",
+        title="Mood Over Time",
         xaxis_title="Date",
+        yaxis_title="Mood (1-10)",
         paper_bgcolor="#f7f6f2",
         plot_bgcolor="#f7f6f2",
         font=dict(family="DM Sans", color="#2a2a2a"),
-        height=360,
+        height=320,
         hovermode="x unified",
         margin=dict(l=20, r=20, t=40, b=20),
         legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.8)", bordercolor="rgba(200,200,200,0.5)", borderwidth=1)
     )
-    # Hide y-axis entirely — series are on a comparable scale now, raw values
-    # live in the hover tooltips.
-    fig_mood.update_yaxes(
-        showticklabels=False, showgrid=True, zeroline=True,
-        zerolinecolor="rgba(150,150,150,0.3)", title_text="",
-    )
+    fig_mood.update_yaxes(range=[0, 10])
 
     # KEYWORD FREQUENCY BAR CHART
     fig_kw = None
@@ -1156,7 +1020,7 @@ Be specific and reference actual keywords, dates, and biometric values from the 
         showlegend=False,
         margin=dict(l=20, r=20, t=40, b=20),
     )
-    fig_mood_dist.update_yaxes(range=[0, 15])
+    fig_mood_dist.update_yaxes(range=[0, 10])
     st.plotly_chart(fig_mood_dist, use_container_width=True)
 
     # Cosine similarity: find most similar past entry to today's
@@ -1207,7 +1071,7 @@ def render_today_tab(rows, oura_by_date):
         st.markdown(f'<div style="text-align:right;padding-top:4px"><span class="streak-badge">{streak_lbl}</span></div>', unsafe_allow_html=True)
 
     # ── Oura badges ──
-    oura_today = oura.build_today_view(oura_by_date)
+    oura_today = oura_by_date.get(date.today().isoformat())
     oura_ui.render_oura_badges(oura_today)
 
     st.markdown('<div class="section-label">What\'s on your mind?</div>', unsafe_allow_html=True)
@@ -1258,7 +1122,7 @@ def render_today_tab(rows, oura_by_date):
         if st.button("Save reflection", type="primary", use_container_width=True):
             if content.strip():
                 with st.spinner("Extracting keywords…"):
-                    kws = extract_keywords(content)
+                    kws = extract_keywords_spacy(content)
                 st.session_state["keywords"] = kws
                 save_reflection(content, mood, kws, st.session_state["user_id"])
                 st.session_state["save_success"] = True
@@ -1277,13 +1141,156 @@ def render_today_tab(rows, oura_by_date):
 user_id = st.session_state["user_id"]
 oura_ui.handle_oauth_callback(supabase, user_id)
 rows = load_all_entries(user_id)
+oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
-# Pull fresh Oura data if today's row is missing/incomplete (throttled to 15 min).
-oura.auto_sync_if_stale(
-    supabase, user_id,
-    client_id=st.secrets.get("OURA_CLIENT_ID"),
-    client_secret=st.secrets.get("OURA_CLIENT_SECRET"),
-)
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Today", "🗺️ Topic Map", "🌿 Dendrogram", "✨ Insights", "⚙️ Settings"])
+
+with tab1:
+    render_today_tab(rows, oura_by_date)
+
+with tab2:
+    render_bertopic_tab(rows)
+
+with tab3:
+    render_dendrogram_tab(rows)
+
+with tab4:
+    render_insights_tab(rows, oura_by_date)
+
+with tab5:
+    oura_ui.render_settings_tab(supabase, user_id)p:18px">{mood}</div>', unsafe_allow_html=True)
+
+    st.markdown("""<div class="kw-header">
+      <div class="section-label" style="margin-top:1rem">Detected keywords</div>
+      <div class="kw-ai-label"> AI-extracted</div>
+    </div>""", unsafe_allow_html=True)
+
+    kws = st.session_state.get("keywords", [])
+    if kws:
+        highlight = {"anxiety","stress","overwhelm","deadline","support","teamwork","grateful","joy","focus","self-care"}
+        chips = '<div class="keywords-row">'
+        for kw in kws:
+            cls = "kw-chip" if kw.lower() in highlight else "kw-chip kw-chip-neutral"
+            chips += f'<span class="{cls}">{kw}</span>'
+        chips += "</div>"
+        st.markdown(chips, unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="color:#bbb;font-size:0.9rem;margin-top:0.4rem">Keywords will appear after you write your reflection.</div>', unsafe_allow_html=True)
+
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-card-label">Entries</div><div class="stat-card-value">{total}</div><div class="stat-card-sub">total logged</div></div>
+      <div class="stat-card"><div class="stat-card-label">Avg Mood</div><div class="stat-card-value">{avg_mood_30d}</div><div class="stat-card-sub">past 30 days</div></div>
+      <div class="stat-card"><div class="stat-card-label">Top Topic</div><div class="stat-card-value" style="font-size:1.3rem;padding-top:4px">{top_topic}</div><div class="stat-card-sub">this week</div></div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    _, btn_clear, btn_save = st.columns([4, 1.2, 1.8])
+    with btn_clear:
+        if st.button("Clear", use_container_width=True):
+            st.session_state["keywords"] = []
+            st.session_state["save_success"] = False
+            st.rerun()
+    with btn_save:
+        if st.button("Save reflection", type="primary", use_container_width=True):
+            if content.strip():
+                with st.spinner("Extracting keywords…"):
+                    kws = extract_keywords(content)
+                st.session_state["keywords"] = kws
+                save_reflection(content, mood, kws, st.session_state["user_id"])
+                st.session_state["save_success"] = True
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("Write something first before saving.")
+
+    if st.session_state.get("save_success"):
+        st.markdown('<div class="save-msg">✓ Reflection saved for today.</div>', unsafe_allow_html=True)
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+def hash_pw(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def render_login_page():
+    import base64 as b64mod
+    with open("logo.png", "rb") as f:
+        logo_b64 = b64mod.b64encode(f.read()).decode()
+
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="login-logo"><img src="data:image/png;base64,{logo_b64}" width="320"/></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="login-title">mirra</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-sub">WHERE PATTERNS EVOLVE INTO AWARENESS</div>', unsafe_allow_html=True)
+
+    mode = st.radio("", ["Sign in", "Create account"], horizontal=True, label_visibility="collapsed", key="auth_mode")
+
+    with st.container(border=True):
+        username = st.text_input("Username", key="auth_user", placeholder="your username")
+        password = st.text_input("Password", type="password", key="auth_pass", placeholder="••••••••")
+
+        if mode == "Sign in":
+            if st.button("Sign in", type="primary", use_container_width=True):
+                if not username or not password:
+                    st.error("Please enter both username and password.")
+                else:
+                    res = supabase.table("users").select("id,username,password_hash").eq("username", username.strip().lower()).execute()
+                    if not res.data:
+                        st.error("Username not found.")
+                    elif res.data[0]["password_hash"] != hash_pw(password):
+                        st.error("Incorrect password.")
+                    else:
+                        st.session_state["user_id"]   = res.data[0]["id"]
+                        st.session_state["username"]  = res.data[0]["username"]
+                        st.session_state["logged_in"] = True
+                        st.rerun()
+        else:
+            if st.button("Create account", type="primary", use_container_width=True):
+                if not username or not password:
+                    st.error("Please fill in all fields.")
+                elif len(password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    clean = username.strip().lower()
+                    existing = supabase.table("users").select("id").eq("username", clean).execute()
+                    if existing.data:
+                        st.error("Username already taken.")
+                    else:
+                        new_user = supabase.table("users").insert({
+                            "username": clean,
+                            "password_hash": hash_pw(password),
+                        }).execute()
+                        uid = new_user.data[0]["id"]
+                        st.session_state["user_id"]   = uid
+                        st.session_state["username"]  = clean
+                        st.session_state["logged_in"] = True
+                        st.rerun()
+
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+if not st.session_state.get("logged_in"):
+    render_login_page()
+    st.stop()
+
+# Logout button
+with st.container():
+    col_space, col_logout = st.columns([5, 1])
+    with col_logout:
+        if st.button("Sign out", key="logout"):
+            for k in ["logged_in", "user_id", "username", "keywords",
+                      "save_success", "dendro_results", "insight_report"]:
+                st.session_state.pop(k, None)
+            st.cache_data.clear()
+            st.rerun()
+
+user_id = st.session_state["user_id"]
+oura_ui.handle_oauth_callback(supabase, user_id)
+rows = load_all_entries(user_id)
 oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Today", "🗺️ Topic Map", "🌿 Dendrogram", "✨ Insights", "⚙️ Settings"])
@@ -1302,3 +1309,352 @@ with tab4:
 
 with tab5:
     oura_ui.render_settings_tab(supabase, user_id)
+
+
+
+# ── Insights agent ────────────────────────────────────────────────────────────
+def render_insights_tab(rows, oura_by_date):
+    st.markdown('<p class="title-text">Insights</p>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">Claude analytics agent · mood trends · keyword correlations · reflection analytics</div>', unsafe_allow_html=True)
+
+    MIN_ENTRIES = 7
+    if len(rows) < MIN_ENTRIES:
+        st.markdown(f'<div class="min-data-msg">⚠️ Insights need at least <strong>{MIN_ENTRIES} entries</strong> to surface patterns. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
+        return
+
+    # ── Mood vs Sleep chart (renders only if Oura data exists) ──
+    oura_ui.render_mood_sleep_chart(rows, oura_by_date)
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+
+    # Build structured summary for Claude
+    recent = rows[:30]
+    summary_lines = []
+    for r in recent:
+        kws = ", ".join(r.get("keywords") or [])
+        summary_lines.append(f"- {r['entry_date']} | mood: {r['mood']} | keywords: {kws} | excerpt: {r['content'][:100]}")
+    summary_text = "\n".join(summary_lines)
+
+    moods = [r["mood"] for r in recent]
+    avg_m = round(sum(moods) / len(moods), 1)
+    trend = moods[0] - moods[-1]  # newest - oldest (rows are desc)
+
+    all_kws: list[str] = []
+    for r in recent:
+        all_kws.extend([k.lower() for k in (r.get("keywords") or [])])
+    kw_freq = {}
+    for k in all_kws:
+        kw_freq[k] = kw_freq.get(k, 0) + 1
+    top_kws = sorted(kw_freq, key=kw_freq.get, reverse=True)[:10]
+
+    if st.button("✨ Generate insight report", type="primary"):
+        with st.spinner("Analyzing your reflections…"):
+            prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
+
+Here are the user's {len(recent)} most recent reflection entries (newest first):
+{summary_text}
+
+Overall stats:
+- Average mood (these entries): {avg_m}/10
+- Mood trend: {"improving" if trend > 0.5 else "declining" if trend < -0.5 else "stable"}
+- Most frequent keywords: {", ".join(top_kws)}
+
+Write a warm, insightful personal trend report with exactly these 4 sections:
+
+1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them
+2. **Recurring themes** — what topics and phrases keep showing up, and what they might mean
+3. **Notable correlations** — specific connections like "your mood drops when X appears" or "you feel better on days when Y comes up"
+4. **One thing to watch** — a gentle, actionable observation to carry forward
+
+Be specific and reference actual keywords and dates from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences."""
+
+            response = ai_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=900,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            report = response.content[0].text
+
+        st.session_state["insight_report"] = report
+
+    if "insight_report" in st.session_state:
+        st.markdown(f'<div class="insight-card">{st.session_state["insight_report"].replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+
+    # ── Reflection Trends Visualizations ──────────────────────────────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Reflection trends</div>', unsafe_allow_html=True)
+
+    # 1. MOOD TIMESERIES
+    mood_dates = [r["entry_date"] for r in rows]
+    mood_values = [r["mood"] for r in rows]
+    
+    # Calculate trend line using numpy polyfit
+    x_numeric = np.arange(len(mood_values))
+    z = np.polyfit(x_numeric, mood_values, 2)  # 2nd degree polynomial for smooth trend
+    p = np.poly1d(z)
+    trend_line = p(x_numeric)
+    
+    fig_mood = go.Figure()
+    
+    # Add filled area under the curve
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_values,
+        fill="tozeroy",
+        fillcolor="rgba(61, 171, 122, 0.1)",
+        line=dict(color="rgba(0,0,0,0)"),
+        showlegend=False,
+        hoverinfo="skip"
+    ))
+    
+    # Add scatter points
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_values,
+        mode="markers",
+        name="Mood",
+        marker=dict(size=8, color="#3dab7a", opacity=0.85, line=dict(width=1, color="white")),
+        hovertemplate="<b>%{x}</b><br>Mood: %{y:.1f}<extra></extra>"
+    ))
+    
+    # Add trend line
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=trend_line,
+        mode="lines",
+        name="Trend",
+        line=dict(color="#d4850a", width=2.5, dash="dash"),
+        hovertemplate="<b>%{x}</b><br>Trend: %{y:.1f}<extra></extra>"
+    ))
+    
+    fig_mood.update_layout(
+        title="Mood Over Time",
+        xaxis_title="Date",
+        yaxis_title="Mood (1-10)",
+        paper_bgcolor="#f7f6f2",
+        plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=320,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.8)", bordercolor="rgba(200,200,200,0.5)", borderwidth=1)
+    )
+    fig_mood.update_yaxes(range=[0, 10])
+
+    # KEYWORD FREQUENCY BAR CHART
+    fig_kw = None
+    if top_kws:
+        kw_names = [kw.title() for kw in top_kws]
+        kw_counts = [kw_freq[kw] for kw in top_kws]
+        
+        fig_kw = go.Figure()
+        fig_kw.add_trace(go.Bar(
+            x=kw_names,
+            y=kw_counts,
+            marker=dict(color="#e05a3a"),
+            hovertemplate="<b>%{x}</b><br>Occurrences: %{y}<extra></extra>"
+        ))
+        fig_kw.update_layout(
+            title="Top Keywords This Month",
+            xaxis_title="Keyword",
+            yaxis_title="Frequency",
+            paper_bgcolor="#f7f6f2",
+            plot_bgcolor="#f7f6f2",
+            font=dict(family="DM Sans", color="#2a2a2a"),
+            height=320,
+            showlegend=False,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_tickangle=-45,
+        )
+
+    # Display 2-column dashboard
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(fig_mood, use_container_width=True)
+    with col2:
+        if fig_kw:
+            st.plotly_chart(fig_kw, use_container_width=True)
+
+    # ── Mood Distribution with Filters ────────────────────────────────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Mood Distribution & Statistics</div>', unsafe_allow_html=True)
+
+    # Build filter options
+    # 1. Day of week filter
+    days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    row_dates = [datetime.fromisoformat(r["entry_date"]).date() for r in rows]
+    row_dow = [days_of_week[datetime.fromisoformat(r["entry_date"]).weekday()] for r in rows]
+    
+    # 2. Build keyword list with counts (min count of 2)
+    kw_freq_all = {}
+    for r in rows:
+        for kw in (r.get("keywords") or []):
+            kw_lower = kw.lower()
+            kw_freq_all[kw_lower] = kw_freq_all.get(kw_lower, 0) + 1
+    
+    kw_with_min_count = sorted(
+        [kw for kw, count in kw_freq_all.items() if count >= 2],
+        key=lambda x: kw_freq_all[x],
+        reverse=True
+    )
+
+    # Create filter UI
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        selected_days = st.multiselect(
+            "Filter by day of week",
+            days_of_week,
+            default=days_of_week,
+            key="mood_dist_days"
+        )
+    with filter_col2:
+        selected_kws = st.multiselect(
+            "Filter by keywords (min 2 occurrences)",
+            kw_with_min_count,
+            default=kw_with_min_count[:5] if len(kw_with_min_count) > 5 else kw_with_min_count,
+            key="mood_dist_kws"
+        )
+
+    # Apply filters to get filtered mood values
+    filtered_moods = []
+    for i, r in enumerate(rows):
+        # Check day filter
+        if row_dow[i] not in selected_days:
+            continue
+        
+        # Check keyword filter
+        entry_kws = [kw.lower() for kw in (r.get("keywords") or [])]
+        if selected_kws:
+            if not any(kw in entry_kws for kw in selected_kws):
+                continue
+        
+        filtered_moods.append(r["mood"])
+
+    # Create mood distribution chart with filtered data
+    fig_mood_dist = go.Figure()
+    fig_mood_dist.add_trace(go.Violin(
+        y=filtered_moods if filtered_moods else mood_values,
+        name="Mood Distribution",
+        marker=dict(color="#d4850a"),
+        meanline_visible=True,
+        points=False,
+    ))
+    fig_mood_dist.update_layout(
+        title=f"Mood Distribution ({len(filtered_moods)} entries)",
+        yaxis_title="Mood (1-10)",
+        paper_bgcolor="#f7f6f2",
+        plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=300,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    fig_mood_dist.update_yaxes(range=[0, 10])
+    st.plotly_chart(fig_mood_dist, use_container_width=True)
+
+    # Cosine similarity: find most similar past entry to today's
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Similar past entries</div>', unsafe_allow_html=True)
+    today_rows = [r for r in rows if r["entry_date"] == date.today().isoformat()]
+    if today_rows and len(rows) > 1:
+        texts = [r["content"] for r in rows]
+        with st.spinner("Computing similarity…"):
+            embs = get_embeddings(texts)
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        normed = embs / np.where(norms == 0, 1, norms)
+        sims = normed[0] @ normed[1:].T
+        top_idx = np.argsort(sims)[::-1][:3]
+        for idx in top_idx:
+            r = rows[idx + 1]
+            score = round(float(sims[idx]), 2)
+            kws = " · ".join((r.get("keywords") or [])[:4])
+            st.markdown(f"""
+            <div style="background:#f0efe8; border-radius:10px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start; gap:12px">
+                <div>
+                    <div style="font-size:0.82rem; color:#aaa; margin-bottom:3px">{r['entry_date']} · mood {r['mood']}</div>
+                    <div style="font-size:0.92rem; color:#2a2a2a">{r['content'][:100]}…</div>
+                    <div style="font-size:0.8rem; color:#3dab7a; margin-top:4px">{kws}</div>
+                </div>
+                <div style="font-size:0.85rem; font-weight:600; color:#3dab7a; white-space:nowrap">{score} sim</div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="color:#bbb; font-size:0.9rem">Save today\'s reflection first to find similar past entries.</div>', unsafe_allow_html=True)
+
+
+# ── Today's reflection tab ────────────────────────────────────────────────────
+def render_today_tab(rows, oura_by_date):
+    total, avg_mood_30d, top_topic, streak, today_row = load_stats(rows)
+    default_content = today_row["content"] if today_row else ""
+    default_mood    = float(today_row["mood"]) if today_row else 6.5
+    if today_row and not st.session_state.get("keywords"):
+        st.session_state["keywords"] = today_row.get("keywords") or []
+
+    today_str  = date.today().strftime("%A · %B") + f" {date.today().day}, {date.today().year}"
+    streak_lbl = f"🔥 {streak}-day streak" if streak > 1 else ("✨ Start your streak!" if streak == 0 else "Day 1 streak!")
+
+    col_title, col_streak = st.columns([3, 1])
+    with col_title:
+        st.markdown(f'<div class="date-label">{today_str}</div>', unsafe_allow_html=True)
+        st.markdown('<p class="title-text">Today\'s reflection</p>', unsafe_allow_html=True)
+    with col_streak:
+        st.markdown(f'<div style="text-align:right;padding-top:4px"><span class="streak-badge">{streak_lbl}</span></div>', unsafe_allow_html=True)
+
+    # ── Oura badges ──
+    oura_today = oura_by_date.get(date.today().isoformat())
+    oura_ui.render_oura_badges(oura_today)
+
+    st.markdown('<div class="section-label">What\'s on your mind?</div>', unsafe_allow_html=True)
+    content = st.text_area("reflection", value=default_content,
+                           placeholder="Write about your day, what you're feeling, what went well or didn't…",
+                           height=140, label_visibility="collapsed")
+
+    st.markdown('<div class="section-label">Mood (1–10)</div>', unsafe_allow_html=True)
+    mood_col, val_col = st.columns([10, 1])
+    with mood_col:
+        mood = st.slider("mood", 1.0, 10.0, default_mood, step=0.5, label_visibility="collapsed")
+    with val_col:
+        st.markdown(f'<div class="mood-value" style="padding-top:18px">{mood}</div>', unsafe_allow_html=True)
+
+    st.markdown("""<div class="kw-header">
+      <div class="section-label" style="margin-top:1rem">Detected keywords</div>
+      <div class="kw-ai-label">spaCy · AI-extracted</div>
+    </div>""", unsafe_allow_html=True)
+
+    kws = st.session_state.get("keywords", [])
+    if kws:
+        highlight = {"anxiety","stress","overwhelm","deadline","support","teamwork","grateful","joy","focus","self-care"}
+        chips = '<div class="keywords-row">'
+        for kw in kws:
+            cls = "kw-chip" if kw.lower() in highlight else "kw-chip kw-chip-neutral"
+            chips += f'<span class="{cls}">{kw}</span>'
+        chips += "</div>"
+        st.markdown(chips, unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="color:#bbb;font-size:0.9rem;margin-top:0.4rem">Keywords will appear after you write your reflection.</div>', unsafe_allow_html=True)
+
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-card-label">Entries</div><div class="stat-card-value">{total}</div><div class="stat-card-sub">total logged</div></div>
+      <div class="stat-card"><div class="stat-card-label">Avg Mood</div><div class="stat-card-value">{avg_mood_30d}</div><div class="stat-card-sub">past 30 days</div></div>
+      <div class="stat-card"><div class="stat-card-label">Top Topic</div><div class="stat-card-value" style="font-size:1.3rem;padding-top:4px">{top_topic}</div><div class="stat-card-sub">this week</div></div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    _, btn_clear, btn_save = st.columns([4, 1.2, 1.8])
+    with btn_clear:
+        if st.button("Clear", use_container_width=True):
+            st.session_state["keywords"] = []
+            st.session_state["save_success"] = False
+            st.rerun()
+    with btn_save:
+        if st.button("Save reflection", type="primary", use_container_width=True):
+            if content.strip():
+                with st.spinner("Extracting keywords…"):
+                    kws = extract_keywords_spacy(content)
+                st.session_state["keywords"] = kws
+                save_reflection(content, mood, kws, st.session_state["user_id"])
+                st.session_state["save_success"] = True
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("Write something first before saving.")
+
+    if st.session_state.get("save_success"):
+        st.markdown('<div class="save-msg">✓ Reflection saved for today.</div>', unsafe_allow_html=True)

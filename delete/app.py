@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta
 import json
 import numpy as np
 import plotly.graph_objects as go
-from intro_page import render_intro_page, user_has_seen_intro
 
 import oura
 import oura_ui
@@ -773,12 +772,6 @@ def render_login_page():
 if not st.session_state.get("logged_in"):
     render_login_page()
     st.stop()
-    
-
-# After login, before logout button:
-if not st.session_state.get("has_seen_intro") and not user_has_seen_intro(supabase, st.session_state["user_id"]):
-    render_intro_page(supabase, st.session_state["user_id"])
-    st.stop()
 
 # Logout button
 with st.container():
@@ -813,77 +806,12 @@ def render_insights_tab(rows, oura_by_date):
     summary_lines = []
     for r in recent:
         kws = ", ".join(r.get("keywords") or [])
-        # Pair each reflection with that day's Oura metrics (if available) so
-        # Claude can spot correlations like "low HRV days have anxious keywords".
-        oura_row = oura_by_date.get(r["entry_date"]) or {}
-        oura_bits = []
-        if oura_row.get("sleep_score") is not None:
-            oura_bits.append(f"sleep {int(oura_row['sleep_score'])}")
-        if oura_row.get("readiness_score") is not None:
-            oura_bits.append(f"readiness {int(oura_row['readiness_score'])}")
-        if oura_row.get("hrv_avg") is not None:
-            oura_bits.append(f"hrv {int(oura_row['hrv_avg'])}ms")
-        if oura_row.get("resting_hr") is not None:
-            oura_bits.append(f"rhr {int(oura_row['resting_hr'])}")
-        oura_str = f" | {' · '.join(oura_bits)}" if oura_bits else ""
-        summary_lines.append(
-            f"- {r['entry_date']} | mood: {r['mood']}{oura_str} | "
-            f"keywords: {kws} | excerpt: {r['content'][:100]}"
-        )
+        summary_lines.append(f"- {r['entry_date']} | mood: {r['mood']} | keywords: {kws} | excerpt: {r['content'][:100]}")
     summary_text = "\n".join(summary_lines)
 
     moods = [r["mood"] for r in recent]
     avg_m = round(sum(moods) / len(moods), 1)
     trend = moods[0] - moods[-1]  # newest - oldest (rows are desc)
-
-    # Aggregate Oura stats + lightweight mood↔biometric correlations.
-    # Doing the arithmetic in Python (rather than in the prompt) keeps Claude
-    # from having to compute Pearson r on numbers it can easily get wrong.
-    def _aligned(field: str) -> tuple[list[float], list[float]]:
-        xs, ys = [], []
-        for r in recent:
-            v = (oura_by_date.get(r["entry_date"]) or {}).get(field)
-            if v is not None:
-                xs.append(float(v))
-                ys.append(float(r["mood"]))
-        return xs, ys
-
-    def _corr(xs: list[float], ys: list[float]) -> str | None:
-        if len(xs) < 5:
-            return None
-        try:
-            r = float(np.corrcoef(xs, ys)[0, 1])
-        except Exception:
-            return None
-        if np.isnan(r):
-            return None
-        if r > 0.4:
-            strength = "moderate-to-strong positive"
-        elif r > 0.2:
-            strength = "weak positive"
-        elif r < -0.4:
-            strength = "moderate-to-strong negative"
-        elif r < -0.2:
-            strength = "weak negative"
-        else:
-            strength = "essentially none"
-        return f"{strength} (r={r:.2f}, n={len(xs)})"
-
-    oura_summary_lines = []
-    for label, field in [("sleep score", "sleep_score"),
-                         ("readiness", "readiness_score"),
-                         ("HRV", "hrv_avg"),
-                         ("resting HR", "resting_hr")]:
-        xs, ys = _aligned(field)
-        if not xs:
-            continue
-        avg = round(sum(xs) / len(xs), 1)
-        line = f"- Avg {label}: {avg} (n={len(xs)})"
-        c = _corr(xs, ys)
-        if c is not None:
-            line += f" · mood↔{label} correlation: {c}"
-        oura_summary_lines.append(line)
-    oura_block = "\n".join(oura_summary_lines) if oura_summary_lines else "- (no Oura data paired with these entries)"
 
     all_kws: list[str] = []
     for r in recent:
@@ -897,8 +825,7 @@ def render_insights_tab(rows, oura_by_date):
         with st.spinner("Analyzing your reflections…"):
             prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
 
-Here are the user's {len(recent)} most recent reflection entries (newest first). Each line shows the reflection's date, self-reported mood (1–10), and — where available — that day's Oura Ring biometrics: sleep score (0–100), readiness score (0–100), heart-rate variability in milliseconds (higher = better recovery), and resting heart rate in bpm (lower = better recovery).
-
+Here are the user's {len(recent)} most recent reflection entries (newest first):
 {summary_text}
 
 Overall stats:
@@ -906,21 +833,18 @@ Overall stats:
 - Mood trend: {"improving" if trend > 0.5 else "declining" if trend < -0.5 else "stable"}
 - Most frequent keywords: {", ".join(top_kws)}
 
-Biometric averages and mood correlations (Pearson r, computed across days where both mood and the metric exist):
-{oura_block}
-
 Write a warm, insightful personal trend report with exactly these 4 sections:
 
-1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them. Where the data supports it, link mood shifts to biometrics (e.g. "your lowest moods cluster on poor-sleep nights" — but only say this if the dates actually show it).
+1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them
 2. **Recurring themes** — what topics and phrases keep showing up, and what they might mean
-3. **Notable correlations** — specific connections like "your mood drops when X appears" or "high-HRV days tend to mention Y." Use the correlation numbers above as a guide: only call something a real correlation if r is at least 0.3 in magnitude. If the strongest correlation is weak, say so honestly rather than inventing one.
+3. **Notable correlations** — specific connections like "your mood drops when X appears" or "you feel better on days when Y comes up"
 4. **One thing to watch** — a gentle, actionable observation to carry forward
 
-Be specific and reference actual keywords, dates, and biometric values from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences. Do not over-claim causation — Oura biometrics and self-reported mood are correlated signals, not proof one causes the other."""
+Be specific and reference actual keywords and dates from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences."""
 
             response = ai_client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=1100,
+                max_tokens=900,
                 messages=[{"role": "user", "content": prompt}]
             )
             report = response.content[0].text

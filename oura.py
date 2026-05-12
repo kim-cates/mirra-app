@@ -253,18 +253,38 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
         row["raw"]["daily_activity"] = item
 
     # Detailed sleep: there can be multiple periods per day (naps + main sleep).
-    # Pick the longest as the "main" sleep for HRV / RHR / total sleep.
+    # We attribute each period to the LOCAL DATE THE USER WOKE UP, not Oura's
+    # `day` field. Oura's `/sleep` tags the day containing the most of the
+    # session, so a pre-midnight bedtime puts the whole night under yesterday —
+    # but `/daily_sleep` (the score) uses wake-up date. Aligning to wake-up date
+    # keeps duration on the same row as the score.
     sleep_by_day: dict[str, list[dict]] = {}
     for item in detailed_resp.get("data", []):
-        d = item.get("day")
+        wake_iso = item.get("bedtime_end")
+        if wake_iso:
+            try:
+                wake_dt = datetime.fromisoformat(wake_iso.replace("Z", "+00:00"))
+                d = wake_dt.date().isoformat()
+            except ValueError:
+                d = item.get("day")
+        else:
+            d = item.get("day")
         if not d:
+            continue
+        # Skip pure-nap periods (type='nap') so they don't inflate sleep totals.
+        if item.get("type") == "nap":
             continue
         sleep_by_day.setdefault(d, []).append(item)
 
     for d, periods in sleep_by_day.items():
+        # Total sleep = sum across all periods attributed to this wake-up day
+        # (handles cases where Oura splits one night into multiple records).
+        total = sum((p.get("total_sleep_duration") or 0) for p in periods)
+        # HRV / resting HR come from the longest period only — averaging across
+        # short awakenings would distort them.
         main = max(periods, key=lambda s: s.get("total_sleep_duration") or 0)
         row = _ensure(d)
-        row["total_sleep_seconds"] = main.get("total_sleep_duration")
+        row["total_sleep_seconds"] = total or None
         row["hrv_avg"] = main.get("average_hrv")
         row["resting_hr"] = main.get("lowest_heart_rate")
         row["raw"]["sleep"] = main
@@ -310,3 +330,112 @@ def load_oura_for_user(supabase, user_id: str) -> dict[str, dict]:
     """Returns dict mapping entry_date string -> oura_daily row."""
     res = supabase.table("oura_daily").select("*").eq("user_id", user_id).execute()
     return {r["entry_date"]: r for r in (res.data or [])}
+
+
+def _row_is_complete(row: Optional[dict]) -> bool:
+    """True iff the row has all the metrics we display. Activity is the laggard."""
+    if not row:
+        return False
+    return all(
+        row.get(k) is not None
+        for k in ("sleep_score", "readiness_score", "activity_score")
+    )
+
+
+def auto_sync_if_stale(supabase, user_id: str,
+                       client_id: Optional[str] = None,
+                       client_secret: Optional[str] = None,
+                       min_interval_seconds: int = 900) -> bool:
+    """
+    Sync the last 2 days from Oura if today's row is missing/incomplete AND we
+    haven't synced in the last `min_interval_seconds` (default 15 min).
+
+    Returns True if a sync ran, False otherwise. Silent on failure — this is
+    a background-style refresh, not a user-initiated action.
+    """
+    # Throttle: check most recent fetched_at across this user's rows
+    today_iso = date.today().isoformat()
+    yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
+
+    res = (supabase.table("oura_daily")
+           .select("entry_date,sleep_score,readiness_score,activity_score,fetched_at")
+           .eq("user_id", user_id)
+           .in_("entry_date", [today_iso, yesterday_iso])
+           .execute())
+    rows = {r["entry_date"]: r for r in (res.data or [])}
+    today_row = rows.get(today_iso)
+
+    # If today is already complete, nothing to do.
+    if _row_is_complete(today_row):
+        return False
+
+    # Throttle on the most recent fetched_at we've seen for either day
+    last_fetch = None
+    for r in rows.values():
+        ts = r.get("fetched_at")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if last_fetch is None or dt > last_fetch:
+                    last_fetch = dt
+            except ValueError:
+                pass
+    if last_fetch and (datetime.now(timezone.utc) - last_fetch).total_seconds() < min_interval_seconds:
+        return False
+
+    try:
+        token = get_valid_token(supabase, user_id, client_id, client_secret)
+        if not token:
+            return False
+        sync_oura(supabase, user_id, token, days_back=2)
+        return True
+    except OuraError:
+        # Don't surface errors here — page will just render with stale data.
+        return False
+
+
+# Metrics we'll fall back to yesterday for if today is missing them.
+# Sleep/readiness/HRV/total_sleep are based on last night and post in the morning,
+# so today's row usually has them. Activity needs a full day of movement, so it
+# lands later — that's the main one we expect to fall back on.
+_FALLBACKABLE_METRICS = (
+    "sleep_score",
+    "readiness_score",
+    "activity_score",
+    "total_sleep_seconds",
+    "hrv_avg",
+    "resting_hr",
+    "steps",
+)
+
+
+def build_today_view(oura_by_date: dict[str, dict]) -> Optional[dict]:
+    """
+    Merge today's and yesterday's Oura rows into one view, taking today's value
+    for each metric where available and falling back to yesterday otherwise.
+
+    Returns None if neither day has any data. Otherwise returns a dict with the
+    same shape as an oura_daily row, plus a `_source_by_metric` field mapping
+    each metric name to either "today" or "yesterday" so the UI can label it.
+    """
+    today_iso = date.today().isoformat()
+    yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
+    today_row = oura_by_date.get(today_iso) or {}
+    yesterday_row = oura_by_date.get(yesterday_iso) or {}
+
+    if not today_row and not yesterday_row:
+        return None
+
+    merged: dict = {"entry_date": today_iso}
+    sources: dict[str, str] = {}
+    for m in _FALLBACKABLE_METRICS:
+        if today_row.get(m) is not None:
+            merged[m] = today_row[m]
+            sources[m] = "today"
+        elif yesterday_row.get(m) is not None:
+            merged[m] = yesterday_row[m]
+            sources[m] = "yesterday"
+    merged["_source_by_metric"] = sources
+    return merged

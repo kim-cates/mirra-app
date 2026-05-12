@@ -224,12 +224,13 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
 def render_oura_badges(oura_today: dict | None) -> None:
     """
     Render a horizontal strip of small cards showing today's Oura metrics.
-    Pass the row from oura_daily for today's date, or None if missing.
+    Pass the merged view from oura.build_today_view(), or None if no data exists
+    for either today or yesterday.
     """
     if not oura_today:
         st.markdown(
             '<div style="color:#bbb; font-size:0.88rem; margin:0.6rem 0 1rem">'
-            '💍 No Oura data for today yet — usually arrives by mid-morning.'
+            '💍 No Oura data yet — connect in Settings or wait for your first sync.'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -240,6 +241,7 @@ def render_oura_badges(oura_today: dict | None) -> None:
     activity = oura_today.get("activity_score")
     total_sleep = oura_today.get("total_sleep_seconds")
     hrv = oura_today.get("hrv_avg")
+    sources = oura_today.get("_source_by_metric", {})
 
     sleep_hours = f"{total_sleep // 3600}h {(total_sleep % 3600) // 60}m" if total_sleep else "—"
 
@@ -255,6 +257,14 @@ def render_oura_badges(oura_today: dict | None) -> None:
             return "#d4850a"
         return "#e05a3a"
 
+    def _sublabel(metric: str, value, default: str) -> str:
+        """Show 'yesterday' tag when value comes from yesterday, else default."""
+        if value is None:
+            return "—"
+        if sources.get(metric) == "yesterday":
+            return "yesterday"
+        return default
+
     html = f"""
     <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin:0.4rem 0 1.2rem">
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
@@ -263,7 +273,9 @@ def render_oura_badges(oura_today: dict | None) -> None:
                     letter-spacing:0.08em; text-transform:uppercase">Sleep</div>
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
                     color:#1a1a1a; line-height:1.1">{_fmt(sleep)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">{sleep_hours}</div>
+        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
+            _sublabel('sleep_score', sleep, sleep_hours)
+        }</div>
       </div>
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
                   border-left:4px solid {_color(readiness)}">
@@ -271,7 +283,9 @@ def render_oura_badges(oura_today: dict | None) -> None:
                     letter-spacing:0.08em; text-transform:uppercase">Readiness</div>
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
                     color:#1a1a1a; line-height:1.1">{_fmt(readiness)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">today</div>
+        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
+            _sublabel('readiness_score', readiness, 'today')
+        }</div>
       </div>
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
                   border-left:4px solid {_color(activity)}">
@@ -279,7 +293,9 @@ def render_oura_badges(oura_today: dict | None) -> None:
                     letter-spacing:0.08em; text-transform:uppercase">Activity</div>
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
                     color:#1a1a1a; line-height:1.1">{_fmt(activity)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">today</div>
+        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
+            _sublabel('activity_score', activity, 'today')
+        }</div>
       </div>
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
                   border-left:4px solid #5b6fa6">
@@ -287,7 +303,9 @@ def render_oura_badges(oura_today: dict | None) -> None:
                     letter-spacing:0.08em; text-transform:uppercase">HRV</div>
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
                     color:#1a1a1a; line-height:1.1">{_fmt(hrv)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">avg ms</div>
+        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
+            _sublabel('hrv_avg', hrv, 'avg ms')
+        }</div>
       </div>
     </div>
     """
