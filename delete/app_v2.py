@@ -954,111 +954,92 @@ Be specific and reference actual keywords, dates, and biometric values from the 
     rhr_z,  _, _ = _zscore(rhr_values)
     hrv_z,  _, _ = _zscore(hrv_values)
 
-    def _build_mood_vs_metric_fig(
-        title: str,
-        metric_label: str,
-        metric_z: list,
-        metric_raw: list,
-        metric_color: str,
-        hover_unit: str,
-    ) -> go.Figure:
-        """Build one mood-vs-physiological-metric figure on a shared z-scale.
+    # Trend line is now computed on z-scored mood so it sits on the same scale.
+    x_numeric = np.arange(len(mood_z))
+    valid_mask = [v is not None for v in mood_z]
+    if sum(valid_mask) >= 3:
+        x_valid = x_numeric[valid_mask]
+        y_valid = [v for v in mood_z if v is not None]
+        z = np.polyfit(x_valid, y_valid, 2)
+        trend_line = np.poly1d(z)(x_numeric)
+    else:
+        trend_line = mood_z
 
-        Mood (filled area + markers + connector line) and the metric (line+markers)
-        share one y-axis. Hover tooltips carry the original raw values so the chart
-        is comparable across metrics without making the axis itself meaningless.
-        """
-        fig = go.Figure()
+    fig_mood = go.Figure()
 
-        # Filled area under mood (z-scored)
-        fig.add_trace(go.Scatter(
-            x=mood_dates, y=mood_z,
-            fill="tozeroy",
-            fillcolor="rgba(61, 171, 122, 0.1)",
-            line=dict(color="rgba(0,0,0,0)"),
-            showlegend=False,
-            hoverinfo="skip",
+    # Filled area under mood (z-scored)
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_z,
+        fill="tozeroy",
+        fillcolor="rgba(61, 171, 122, 0.1)",
+        line=dict(color="rgba(0,0,0,0)"),
+        showlegend=False,
+        hoverinfo="skip"
+    ))
+
+    # Mood markers — hover shows the original 1–10 value, not the z-score.
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=mood_z,
+        customdata=mood_values,
+        mode="markers",
+        name="Mood",
+        marker=dict(size=8, color="#3dab7a", opacity=0.85, line=dict(width=1, color="white")),
+        hovertemplate="<b>%{x}</b><br>Mood: %{customdata:.1f}<extra></extra>"
+    ))
+
+    # Trend (already on z-scale)
+    fig_mood.add_trace(go.Scatter(
+        x=mood_dates, y=trend_line,
+        mode="lines",
+        name="Trend",
+        line=dict(color="#d4850a", width=2.5, dash="dash"),
+        hoverinfo="skip"
+    ))
+
+    # Resting HR — shared axis, hover shows bpm
+    rhr_with_data = [(d, z, raw) for d, z, raw in zip(mood_dates, rhr_z, rhr_values) if z is not None]
+    if rhr_with_data:
+        rhr_dates, rhr_zs, rhr_raws = zip(*rhr_with_data)
+        fig_mood.add_trace(go.Scatter(
+            x=rhr_dates, y=rhr_zs,
+            customdata=rhr_raws,
+            mode="lines+markers",
+            name="Resting HR",
+            line=dict(color="#e05a3a", width=2),
+            marker=dict(size=5, color="#e05a3a"),
+            hovertemplate="<b>%{x}</b><br>Resting HR: %{customdata:.0f} bpm<extra></extra>"
         ))
 
-        # Mood markers — hover shows the original 1–10 value, not the z-score.
-        fig.add_trace(go.Scatter(
-            x=mood_dates, y=mood_z,
-            customdata=mood_values,
-            mode="markers",
-            name="Mood",
-            marker=dict(size=8, color="#3dab7a", opacity=0.85, line=dict(width=1, color="white")),
-            hovertemplate="<b>%{x}</b><br>Mood: %{customdata:.1f}<extra></extra>",
+    # HRV — shared axis, hover shows ms
+    hrv_with_data = [(d, z, raw) for d, z, raw in zip(mood_dates, hrv_z, hrv_values) if z is not None]
+    if hrv_with_data:
+        hrv_dates, hrv_zs, hrv_raws = zip(*hrv_with_data)
+        fig_mood.add_trace(go.Scatter(
+            x=hrv_dates, y=hrv_zs,
+            customdata=hrv_raws,
+            mode="lines+markers",
+            name="HRV",
+            line=dict(color="#5b6fa6", width=2),
+            marker=dict(size=5, color="#5b6fa6"),
+            hovertemplate="<b>%{x}</b><br>HRV: %{customdata:.0f} ms<extra></extra>"
         ))
 
-        # Mood trend — dashed green line connecting the actual mood points
-        # day-by-day, matching the visual treatment used for Resting HR and HRV.
-        # `connectgaps` bridges any missing days so the line stays continuous.
-        fig.add_trace(go.Scatter(
-            x=mood_dates, y=mood_z,
-            mode="lines",
-            name="Mood trend",
-            line=dict(color="#3dab7a", width=2, dash="dash"),
-            connectgaps=True,
-            hoverinfo="skip",
-        ))
-
-        # Physiological metric — shared axis, hover shows raw units
-        metric_with_data = [
-            (d, z, raw)
-            for d, z, raw in zip(mood_dates, metric_z, metric_raw)
-            if z is not None
-        ]
-        if metric_with_data:
-            m_dates, m_zs, m_raws = zip(*metric_with_data)
-            fig.add_trace(go.Scatter(
-                x=m_dates, y=m_zs,
-                customdata=m_raws,
-                mode="lines+markers",
-                name=metric_label,
-                line=dict(color=metric_color, width=2),
-                marker=dict(size=5, color=metric_color),
-                hovertemplate=f"<b>%{{x}}</b><br>{metric_label}: %{{customdata:.0f}} {hover_unit}<extra></extra>",
-            ))
-
-        fig.update_layout(
-            title=title,
-            xaxis_title="Date",
-            paper_bgcolor="#f7f6f2",
-            plot_bgcolor="#f7f6f2",
-            font=dict(family="DM Sans", color="#2a2a2a"),
-            height=280,
-            hovermode="x unified",
-            margin=dict(l=20, r=20, t=40, b=20),
-            legend=dict(
-                x=0.01, y=0.99,
-                bgcolor="rgba(255,255,255,0.8)",
-                bordercolor="rgba(200,200,200,0.5)",
-                borderwidth=1,
-            ),
-        )
-        # Hide y-axis ticks — series are on a comparable scale, raw values live
-        # in the hover tooltips.
-        fig.update_yaxes(
-            showticklabels=False, showgrid=True, zeroline=True,
-            zerolinecolor="rgba(150,150,150,0.3)", title_text="",
-        )
-        return fig
-
-    fig_mood_rhr = _build_mood_vs_metric_fig(
-        title="Mood & Resting HR (standardised)",
-        metric_label="Resting HR",
-        metric_z=rhr_z,
-        metric_raw=rhr_values,
-        metric_color="#e05a3a",
-        hover_unit="bpm",
+    fig_mood.update_layout(
+        title="Mood, Heart Rate & HRV (standardised)",
+        xaxis_title="Date",
+        paper_bgcolor="#f7f6f2",
+        plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=360,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.8)", bordercolor="rgba(200,200,200,0.5)", borderwidth=1)
     )
-    fig_mood_hrv = _build_mood_vs_metric_fig(
-        title="Mood & HRV (standardised)",
-        metric_label="HRV",
-        metric_z=hrv_z,
-        metric_raw=hrv_values,
-        metric_color="#5b6fa6",
-        hover_unit="ms",
+    # Hide y-axis entirely — series are on a comparable scale now, raw values
+    # live in the hover tooltips.
+    fig_mood.update_yaxes(
+        showticklabels=False, showgrid=True, zeroline=True,
+        zerolinecolor="rgba(150,150,150,0.3)", title_text="",
     )
 
     # KEYWORD FREQUENCY BAR CHART
@@ -1087,14 +1068,10 @@ Be specific and reference actual keywords, dates, and biometric values from the 
             xaxis_tickangle=-45,
         )
 
-    # Display 2-column dashboard. The two mood charts stack in the left column
-    # so they sit alongside each other vertically (RHR and HRV are conceptually
-    # paired views of the same mood timeseries); the keyword chart stays on
-    # the right at its original size.
+    # Display 2-column dashboard
     col1, col2 = st.columns(2)
     with col1:
-        st.plotly_chart(fig_mood_rhr, use_container_width=True)
-        st.plotly_chart(fig_mood_hrv, use_container_width=True)
+        st.plotly_chart(fig_mood, use_container_width=True)
     with col2:
         if fig_kw:
             st.plotly_chart(fig_kw, use_container_width=True)

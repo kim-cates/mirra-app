@@ -240,10 +240,20 @@ def render_oura_badges(oura_today: dict | None) -> None:
     readiness = oura_today.get("readiness_score")
     activity = oura_today.get("activity_score")
     total_sleep = oura_today.get("total_sleep_seconds")
-    hrv = oura_today.get("hrv_avg")
+    resting_hr = oura_today.get("resting_hr")
     sources = oura_today.get("_source_by_metric", {})
 
-    sleep_hours = f"{total_sleep // 3600}h {(total_sleep % 3600) // 60}m" if total_sleep else "—"
+    # Only show duration alongside the score when they came from the SAME night.
+    # `total_sleep_seconds` and `sleep_score` are fetched independently and can
+    # post at different times, so without this check a freshly-synced score from
+    # today can end up labelled with yesterday's duration (4h49m under today's
+    # 87, etc.) — which looks like a stale render and confuses users.
+    sleep_source = sources.get("sleep_score")
+    total_sleep_source = sources.get("total_sleep_seconds")
+    if total_sleep and sleep_source == total_sleep_source:
+        sleep_hours = f"{total_sleep // 3600}h {(total_sleep % 3600) // 60}m"
+    else:
+        sleep_hours = None  # let _sublabel decide today/yesterday/—
 
     def _fmt(v):
         return str(int(v)) if v is not None else "—"
@@ -258,8 +268,15 @@ def render_oura_badges(oura_today: dict | None) -> None:
         return "#e05a3a"
 
     def _sublabel(metric: str, value, default: str) -> str:
-        """Show 'yesterday' tag when value comes from yesterday, else default."""
+        """Show 'yesterday' tag when value comes from yesterday, else default.
+
+        When value is missing entirely, show 'not synced yet' for sleep-derived
+        metrics (which post in the morning) instead of an empty dash, so users
+        understand the data is on its way rather than thinking the app is broken.
+        """
         if value is None:
+            if metric in ("sleep_score", "readiness_score", "resting_hr"):
+                return "not synced yet"
             return "—"
         if sources.get(metric) == "yesterday":
             return "yesterday"
@@ -274,7 +291,7 @@ def render_oura_badges(oura_today: dict | None) -> None:
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
                     color:#1a1a1a; line-height:1.1">{_fmt(sleep)}</div>
         <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('sleep_score', sleep, sleep_hours)
+            _sublabel('sleep_score', sleep, sleep_hours or 'today')
         }</div>
       </div>
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
@@ -300,11 +317,11 @@ def render_oura_badges(oura_today: dict | None) -> None:
       <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
                   border-left:4px solid #5b6fa6">
         <div style="font-size:0.68rem; font-weight:600; color:#888;
-                    letter-spacing:0.08em; text-transform:uppercase">HRV</div>
+                    letter-spacing:0.08em; text-transform:uppercase">Resting HR</div>
         <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
-                    color:#1a1a1a; line-height:1.1">{_fmt(hrv)}</div>
+                    color:#1a1a1a; line-height:1.1">{_fmt(resting_hr)}</div>
         <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('hrv_avg', hrv, 'avg ms')
+            _sublabel('resting_hr', resting_hr, 'bpm')
         }</div>
       </div>
     </div>

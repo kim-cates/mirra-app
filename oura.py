@@ -15,6 +15,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
+try:
+    # Python 3.9+ — preferred
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # type: ignore
+
 import requests
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -27,6 +33,22 @@ OURA_TOKEN_URL = "https://api.ouraring.com/oauth/token"
 DEFAULT_SCOPES = "personal daily heartrate workout session spo2 ring_configuration"
 
 REQUEST_TIMEOUT = 15  # seconds
+
+# ── User timezone ─────────────────────────────────────────────────────────────
+# Server (Streamlit Cloud, most hosts) typically runs in UTC, so date.today()
+# can be a full day ahead of the user. Oura tags sleep sessions by the user's
+# local day, so we must compute "today" in the user's timezone — not the
+# server's — for everything user-facing (display, fallback, throttle keys).
+#
+# TODO: store this per-user. For now it's a single default since Mirra is
+# single-tenant. If you ever multi-tenant, add a `timezone` column to `users`
+# and thread it through.
+DEFAULT_USER_TZ = "Pacific/Honolulu"
+
+
+def user_today(tz_name: str = DEFAULT_USER_TZ) -> date:
+    """Today's date in the user's local timezone, not the server's."""
+    return datetime.now(ZoneInfo(tz_name)).date()
 
 
 # ── Errors ────────────────────────────────────────────────────────────────────
@@ -258,13 +280,20 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
     # session, so a pre-midnight bedtime puts the whole night under yesterday —
     # but `/daily_sleep` (the score) uses wake-up date. Aligning to wake-up date
     # keeps duration on the same row as the score.
+    #
+    # `bedtime_end` is ISO-8601 with offset; parsing keeps the source offset, but
+    # `.date()` on that returns the calendar date in the source offset — which
+    # for cloud hosts is usually UTC. We need the user's *local* wake-up date,
+    # so convert to the configured tz first. Otherwise an early-morning wake-up
+    # in a UTC-behind timezone (e.g. HST) can land a day late in the row map.
+    user_tz = ZoneInfo(DEFAULT_USER_TZ)
     sleep_by_day: dict[str, list[dict]] = {}
     for item in detailed_resp.get("data", []):
         wake_iso = item.get("bedtime_end")
         if wake_iso:
             try:
                 wake_dt = datetime.fromisoformat(wake_iso.replace("Z", "+00:00"))
-                d = wake_dt.date().isoformat()
+                d = wake_dt.astimezone(user_tz).date().isoformat()
             except ValueError:
                 d = item.get("day")
         else:
@@ -280,11 +309,18 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
         # Total sleep = sum across all periods attributed to this wake-up day
         # (handles cases where Oura splits one night into multiple records).
         total = sum((p.get("total_sleep_duration") or 0) for p in periods)
-        # HRV / resting HR come from the longest period only — averaging across
-        # short awakenings would distort them.
+        # HRV / resting HR / stage durations come from the longest period only —
+        # averaging across short awakenings would distort them.
         main = max(periods, key=lambda s: s.get("total_sleep_duration") or 0)
         row = _ensure(d)
         row["total_sleep_seconds"] = total or None
+        # Convenience duplicates of total in hours, and stage breakdowns in
+        # minutes. Stage durations come from Oura in seconds.
+        row["sleep_hours"] = round(total / 3600, 2) if total else None
+        deep_s = main.get("deep_sleep_duration")
+        rem_s = main.get("rem_sleep_duration")
+        row["deep_sleep_min"] = round(deep_s / 60) if deep_s is not None else None
+        row["rem_sleep_min"] = round(rem_s / 60) if rem_s is not None else None
         row["hrv_avg"] = main.get("average_hrv")
         row["resting_hr"] = main.get("lowest_heart_rate")
         row["raw"]["sleep"] = main
@@ -296,8 +332,11 @@ def sync_oura(supabase, user_id: str, token: str, days_back: int = 7) -> int:
     """
     Fetch the last N days of Oura data and upsert to Supabase.
     Returns the number of days written.
+
+    "Today" is computed in the user's local timezone, not the server's, so
+    we ask Oura for the right calendar days regardless of where the app runs.
     """
-    today = date.today()
+    today = user_today()
     start = today - timedelta(days=days_back - 1)
     by_date = fetch_oura_range(token, start, today)
 
@@ -354,8 +393,8 @@ def auto_sync_if_stale(supabase, user_id: str,
     a background-style refresh, not a user-initiated action.
     """
     # Throttle: check most recent fetched_at across this user's rows
-    today_iso = date.today().isoformat()
-    yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
+    today_iso = user_today().isoformat()
+    yesterday_iso = (user_today() - timedelta(days=1)).isoformat()
 
     res = (supabase.table("oura_daily")
            .select("entry_date,sleep_score,readiness_score,activity_score,fetched_at")
@@ -396,18 +435,25 @@ def auto_sync_if_stale(supabase, user_id: str,
         return False
 
 
-# Metrics we'll fall back to yesterday for if today is missing them.
-# Sleep/readiness/HRV/total_sleep are based on last night and post in the morning,
-# so today's row usually has them. Activity needs a full day of movement, so it
-# lands later — that's the main one we expect to fall back on.
+# Metrics surfaced in the Today view. Each one prefers today's value, then
+# falls back to yesterday if today is missing. The UI labels which day the
+# value came from via `_source_by_metric` so users see honest provenance
+# rather than a silently-stale number.
+#
+# Sleep metrics and readiness usually post within a few hours of wake-up,
+# but on a slow-sync morning yesterday's number is more useful than a blank.
+# Activity accumulates through the day and its final score lands late, so
+# yesterday's score is the right at-a-glance default until today's lands.
+# Resting HR comes from the prior night's sleep period — by definition
+# "yesterday's" once today's sleep is processed.
 _FALLBACKABLE_METRICS = (
     "sleep_score",
     "readiness_score",
     "activity_score",
-    "total_sleep_seconds",
+    "steps",
     "hrv_avg",
     "resting_hr",
-    "steps",
+    "total_sleep_seconds",
 )
 
 
@@ -420,8 +466,8 @@ def build_today_view(oura_by_date: dict[str, dict]) -> Optional[dict]:
     same shape as an oura_daily row, plus a `_source_by_metric` field mapping
     each metric name to either "today" or "yesterday" so the UI can label it.
     """
-    today_iso = date.today().isoformat()
-    yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
+    today_iso = user_today().isoformat()
+    yesterday_iso = (user_today() - timedelta(days=1)).isoformat()
     today_row = oura_by_date.get(today_iso) or {}
     yesterday_row = oura_by_date.get(yesterday_iso) or {}
 
