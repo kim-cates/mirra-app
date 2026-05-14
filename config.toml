@@ -1,0 +1,33 @@
+# Streamlit theme config for Mirra.
+#
+# Save this file as `.streamlit/config.toml` in the project root (same level
+# as app.py). Streamlit Cloud picks it up automatically on deploy.
+#
+# Why this exists: when a user's phone is in dark mode, Streamlit Cloud
+# defaults to its built-in dark theme — which makes the background black
+# and clashes hard with Mirra's cream/sage design. Setting `base = "light"`
+# here forces Streamlit to ignore the OS preference and always serve the
+# light theme.
+#
+# The color values mirror the cream/sage palette used in app.py's custom
+# CSS so Streamlit's native widgets (buttons, text inputs, sliders, etc.)
+# pick up matching colors instead of clashing with the custom styling.
+
+[theme]
+base = "light"
+
+# Mirra's cream background — matches the `background-color: #faf9f5` rule
+# used on `.stApp` in app.py.
+backgroundColor = "#faf9f5"
+
+# Slightly warmer cream for sidebar / secondary surfaces.
+secondaryBackgroundColor = "#f0efe8"
+
+# Sage green — Mirra's accent color. Used by Streamlit for primary buttons,
+# slider tracks, focused input outlines, and progress indicators.
+primaryColor = "#3dab7a"
+
+# Body text.
+textColor = "#2a2a2a"
+
+font = "sans serif"

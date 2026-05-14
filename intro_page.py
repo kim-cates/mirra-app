@@ -113,6 +113,17 @@ INTRO_CSS = """
     margin-top: 1rem;
     letter-spacing: 0.02em;
 }
+
+/* Phone-friendly type scaling — the 2.4rem desktop title is too tall on a
+   narrow screen and pushes the rest of the content below the fold. */
+@media (max-width: 480px) {
+    .intro-wrap { padding-top: 0.4rem; }
+    .intro-title { font-size: 1.75rem; }
+    .intro-lede { font-size: 0.98rem; margin-bottom: 1.8rem; }
+    .intro-card { padding: 1.1rem 1.2rem 1.2rem; }
+    .intro-card-body { padding-left: 36px; font-size: 0.93rem; }
+    .intro-callout { padding: 1rem 0; margin: 1.4rem 0 1.6rem; font-size: 0.94rem; }
+}
 </style>
 """
 
