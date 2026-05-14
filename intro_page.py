@@ -3,7 +3,7 @@ Intro / welcome page for Mirra.
 
 Shown the first time a user signs in (or any time `has_seen_intro` is False
 in the `users` table). Matches the existing Mirra styling: cream background,
-sage accent (#3dab7a), Lora headings, DM Sans body.
+sage accent (#3dab7a), Lora headings, DM Sans body — no emojis.
 
 Usage in app.py:
 
@@ -18,93 +18,100 @@ import streamlit as st
 
 
 # ── Intro page styles ─────────────────────────────────────────────────────────
+# Visual identity: thin sage accent rules instead of emoji icons, more
+# generous letter-spacing on display type, white cards on cream background
+# with a very soft 1px hairline border.
 INTRO_CSS = """
 <style>
-.intro-wrap { max-width: 640px; margin: 0 auto; padding-top: 0.5rem; }
+.intro-wrap { max-width: 620px; margin: 0 auto; padding-top: 1rem; }
 
 .intro-eyebrow {
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     font-weight: 600;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
     color: #3dab7a;
     text-align: center;
-    margin-bottom: 0.8rem;
+    margin-bottom: 1rem;
 }
 .intro-title {
     font-family: 'Lora', serif;
-    font-size: 2.2rem;
-    font-weight: 700;
+    font-size: 2.4rem;
+    font-weight: 600;
     color: #1a1a1a;
     text-align: center;
-    line-height: 1.25;
-    margin: 0 0 0.6rem;
+    line-height: 1.22;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.7rem;
 }
 .intro-lede {
-    font-size: 1.02rem;
-    color: #555;
+    font-size: 1.05rem;
+    color: #6a6a66;
     text-align: center;
-    line-height: 1.65;
-    margin: 0 auto 2.2rem;
+    line-height: 1.7;
+    margin: 0 auto 2.6rem;
     max-width: 480px;
 }
 
 .intro-card {
     background: white;
-    border-radius: 16px;
-    padding: 1.3rem 1.5rem;
-    margin-bottom: 0.9rem;
-    box-shadow: 0 1px 8px rgba(0,0,0,0.04);
+    border-radius: 14px;
+    padding: 1.4rem 1.6rem 1.5rem;
+    margin-bottom: 0.85rem;
     border: 1px solid #ece9df;
+    transition: border-color 0.2s ease;
 }
+.intro-card:hover { border-color: #d8e8df; }
+
 .intro-card-head {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 0.55rem;
+    gap: 14px;
+    margin-bottom: 0.6rem;
 }
-.intro-icon {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
-    background: #e8f5f0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.15rem;
+/* Sage accent rule instead of an emoji icon block */
+.intro-accent {
+    width: 22px;
+    height: 2px;
+    background: #3dab7a;
+    border-radius: 2px;
     flex-shrink: 0;
 }
 .intro-card-title {
     font-family: 'Lora', serif;
     font-size: 1.15rem;
-    font-weight: 700;
+    font-weight: 600;
     color: #1a1a1a;
     margin: 0;
+    letter-spacing: -0.005em;
 }
 .intro-card-body {
-    font-size: 0.96rem;
-    color: #555;
-    line-height: 1.65;
+    font-size: 0.97rem;
+    color: #5a5a55;
+    line-height: 1.7;
     margin: 0;
-    padding-left: 50px;
+    padding-left: 36px;
 }
 
 .intro-callout {
-    background: #e8f5f0;
-    border-left: 4px solid #3dab7a;
-    border-radius: 10px;
-    padding: 0.9rem 1.1rem;
-    margin: 1.6rem 0 1.8rem;
-    color: #1e6b45;
-    font-size: 0.95rem;
-    line-height: 1.6;
+    background: transparent;
+    border-top: 1px solid #ece9df;
+    border-bottom: 1px solid #ece9df;
+    padding: 1.2rem 0;
+    margin: 2rem 0 2.2rem;
+    color: #3a3a36;
+    font-size: 0.98rem;
+    line-height: 1.65;
+    text-align: center;
+    font-style: italic;
 }
 
 .intro-footnote {
     text-align: center;
     color: #aaa;
     font-size: 0.82rem;
-    margin-top: 0.8rem;
+    margin-top: 1rem;
+    letter-spacing: 0.02em;
 }
 </style>
 """
@@ -117,6 +124,10 @@ def user_has_seen_intro(supabase, user_id: str) -> bool:
     Requires a boolean `has_seen_intro` column on the `users` table.
     Missing column or row defaults to False (i.e. show the intro).
     """
+    # Session-state short-circuit: avoids a Supabase round-trip on every
+    # rerun within the same session after the user dismisses the intro.
+    if st.session_state.get("has_seen_intro"):
+        return True
     try:
         res = (
             supabase.table("users")
@@ -126,6 +137,7 @@ def user_has_seen_intro(supabase, user_id: str) -> bool:
             .execute()
         )
         if res.data and res.data[0].get("has_seen_intro"):
+            st.session_state["has_seen_intro"] = True
             return True
     except Exception:
         pass
@@ -139,8 +151,10 @@ def mark_intro_seen(supabase, user_id: str) -> None:
             {"has_seen_intro": True}
         ).eq("id", user_id).execute()
     except Exception:
-        # If the column doesn't exist yet, fall back to session-only
-        st.session_state["has_seen_intro"] = True
+        # If the column doesn't exist yet, fall back to session-only so the
+        # user doesn't see the intro twice in a session.
+        pass
+    st.session_state["has_seen_intro"] = True
 
 
 # ── Page renderer ─────────────────────────────────────────────────────────────
@@ -159,22 +173,22 @@ def render_intro_page(supabase, user_id: str) -> None:
     )
     st.markdown(
         '<p class="intro-lede">'
-        "Your body sends signals all day — about stress, energy, emotion. "
+        "Your body sends signals all day &mdash; about stress, energy, emotion. "
         "Most of us miss them. Mirra helps you notice."
         "</p>",
         unsafe_allow_html=True,
     )
 
-    # ── Three concept cards ──
+    # Concept cards — emoji-free, using a thin sage accent rule for visual rhythm.
     st.markdown(
         """
         <div class="intro-card">
           <div class="intro-card-head">
-            <div class="intro-icon">🫀</div>
+            <div class="intro-accent"></div>
             <p class="intro-card-title">Interoception</p>
           </div>
           <p class="intro-card-body">
-            The skill of sensing what's happening inside you — heart rate,
+            The skill of sensing what's happening inside you &mdash; heart rate,
             breath, tension, fatigue. Like any skill, it can be trained.
           </p>
         </div>
@@ -186,7 +200,7 @@ def render_intro_page(supabase, user_id: str) -> None:
         """
         <div class="intro-card">
           <div class="intro-card-head">
-            <div class="intro-icon">🔍</div>
+            <div class="intro-accent"></div>
             <p class="intro-card-title">The gap</p>
           </div>
           <p class="intro-card-body">
@@ -203,7 +217,7 @@ def render_intro_page(supabase, user_id: str) -> None:
         """
         <div class="intro-card">
           <div class="intro-card-head">
-            <div class="intro-icon">💍</div>
+            <div class="intro-accent"></div>
             <p class="intro-card-title">Where your ring helps</p>
           </div>
           <p class="intro-card-body">
@@ -218,7 +232,7 @@ def render_intro_page(supabase, user_id: str) -> None:
     st.markdown(
         '<div class="intro-callout">'
         "Each reflection helps you connect what your body felt with what your "
-        "mind noticed — building awareness, one day at a time."
+        "mind noticed &mdash; building awareness, one day at a time."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -233,7 +247,6 @@ def render_intro_page(supabase, user_id: str) -> None:
             key="intro_continue",
         ):
             mark_intro_seen(supabase, user_id)
-            st.session_state["has_seen_intro"] = True
             st.rerun()
 
     st.markdown(

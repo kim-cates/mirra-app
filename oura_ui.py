@@ -4,7 +4,7 @@ UI components for Oura integration in Mirra.
 Exposes:
   - render_settings_tab(supabase, user_id)         → connect / sync / disconnect
   - render_oura_badges(oura_today)                 → small cards on Today tab
-  - render_mood_sleep_chart(rows, oura_by_date)    → analytics chart
+  - render_mood_vs_biometric_chart(rows, oura_by_date)  → analytics chart
   - handle_oauth_callback(supabase, user_id)       → call once at top of app
 """
 from __future__ import annotations
@@ -230,7 +230,7 @@ def render_oura_badges(oura_today: dict | None) -> None:
     if not oura_today:
         st.markdown(
             '<div style="color:#bbb; font-size:0.88rem; margin:0.6rem 0 1rem">'
-            '💍 No Oura data yet — connect in Settings or wait for your first sync.'
+            'No Oura data yet — connect in Settings or wait for your first sync.'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -282,103 +282,120 @@ def render_oura_badges(oura_today: dict | None) -> None:
             return "yesterday"
         return default
 
+    def _card(label: str, value_str: str, sublabel_str: str, accent: str) -> str:
+        # Modern card: white background, hairline border, small colored accent dot
+        # next to the label rather than a heavy left bar.
+        return f"""
+      <div style="background:white; border:1px solid #ece9df; border-radius:12px;
+                  padding:0.85rem 1rem 0.9rem;">
+        <div style="display:flex; align-items:center; gap:7px; margin-bottom:6px;">
+          <span style="display:inline-block; width:6px; height:6px; border-radius:999px;
+                       background:{accent};"></span>
+          <span style="font-size:0.66rem; font-weight:600; color:#999;
+                       letter-spacing:0.14em; text-transform:uppercase;">{label}</span>
+        </div>
+        <div style="font-family:'Lora',serif; font-size:1.6rem; font-weight:600;
+                    color:#1a1a1a; line-height:1.05; letter-spacing:-0.01em;">{value_str}</div>
+        <div style="font-size:0.78rem; color:#aaa; margin-top:4px">{sublabel_str}</div>
+      </div>"""
+
     html = f"""
     <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin:0.4rem 0 1.2rem">
-      <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
-                  border-left:4px solid {_color(sleep)}">
-        <div style="font-size:0.68rem; font-weight:600; color:#888;
-                    letter-spacing:0.08em; text-transform:uppercase">Sleep</div>
-        <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
-                    color:#1a1a1a; line-height:1.1">{_fmt(sleep)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('sleep_score', sleep, sleep_hours or 'today')
-        }</div>
-      </div>
-      <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
-                  border-left:4px solid {_color(readiness)}">
-        <div style="font-size:0.68rem; font-weight:600; color:#888;
-                    letter-spacing:0.08em; text-transform:uppercase">Readiness</div>
-        <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
-                    color:#1a1a1a; line-height:1.1">{_fmt(readiness)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('readiness_score', readiness, 'today')
-        }</div>
-      </div>
-      <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
-                  border-left:4px solid {_color(activity)}">
-        <div style="font-size:0.68rem; font-weight:600; color:#888;
-                    letter-spacing:0.08em; text-transform:uppercase">Activity</div>
-        <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
-                    color:#1a1a1a; line-height:1.1">{_fmt(activity)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('activity_score', activity, 'today')
-        }</div>
-      </div>
-      <div style="background:#f0efe8; border-radius:12px; padding:0.7rem 0.9rem;
-                  border-left:4px solid #5b6fa6">
-        <div style="font-size:0.68rem; font-weight:600; color:#888;
-                    letter-spacing:0.08em; text-transform:uppercase">Resting HR</div>
-        <div style="font-family:'Lora',serif; font-size:1.5rem; font-weight:700;
-                    color:#1a1a1a; line-height:1.1">{_fmt(resting_hr)}</div>
-        <div style="font-size:0.78rem; color:#999; margin-top:2px">{
-            _sublabel('resting_hr', resting_hr, 'bpm')
-        }</div>
-      </div>
+      {_card('Sleep',      _fmt(sleep),      _sublabel('sleep_score',     sleep,      sleep_hours or 'today'), _color(sleep))}
+      {_card('Readiness',  _fmt(readiness),  _sublabel('readiness_score', readiness,  'today'),                _color(readiness))}
+      {_card('Activity',   _fmt(activity),   _sublabel('activity_score',  activity,   'today'),                _color(activity))}
+      {_card('Resting HR', _fmt(resting_hr), _sublabel('resting_hr',      resting_hr, 'bpm'),                  '#5b6fa6')}
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
 
 
-# ── Mood vs Sleep chart ───────────────────────────────────────────────────────
-def render_mood_sleep_chart(reflection_rows: list[dict],
-                            oura_by_date: dict[str, dict]) -> None:
-    """
-    Scatter plot of mood (y) vs sleep score (x), one point per day where both exist.
-    Trendline added if enough data.
-    """
-    st.markdown('<div class="section-label">Mood vs Sleep</div>', unsafe_allow_html=True)
+# ── Mood vs biometric scatter ────────────────────────────────────────────────
+# Available x-axis metrics, in the order they appear in the dropdown. Each
+# entry: (display label, oura field, unit, lower_is_better).
+# `lower_is_better=True` flips the interpretation copy — for resting HR, a
+# positive correlation with mood would mean "worse mood on lower-stress days,"
+# i.e. an unfavorable pattern.
+_MOOD_VS_METRICS = [
+    ("Sleep score",   "sleep_score",     "",      False),
+    ("Readiness",     "readiness_score", "",      False),
+    ("HRV",           "hrv_avg",         "ms",    False),
+    ("Resting HR",    "resting_hr",      "bpm",   True),
+    ("REM sleep",     "rem_sleep_min",   "min",   False),
+]
 
-    # Join on entry_date
+
+def render_mood_vs_biometric_chart(reflection_rows: list[dict],
+                                   oura_by_date: dict[str, dict]) -> None:
+    """
+    Scatter plot of mood (y) against a user-selected biometric (x), one point
+    per day where both exist. Trendline + correlation + plain-English read
+    added once there are enough matched days.
+    """
+    # ── Metric picker ────────────────────────────────────────────────────────
+    label_to_spec = {label: (field, unit, lib) for label, field, unit, lib in _MOOD_VS_METRICS}
+    header_col, picker_col = st.columns([3, 2])
+    with header_col:
+        st.markdown('<div class="section-label">Mood vs biometric</div>', unsafe_allow_html=True)
+    with picker_col:
+        metric_label = st.selectbox(
+            "Compare mood against",
+            options=list(label_to_spec.keys()),
+            index=0,
+            key="mood_vs_metric",
+            label_visibility="collapsed",
+        )
+    field, unit, lower_is_better = label_to_spec[metric_label]
+
+    # ── Join reflection rows with Oura on entry_date, picking the selected
+    # metric for the x-axis. Skip days where either side is missing.
     points = []
     for r in reflection_rows:
         d = r["entry_date"]
         oura_row = oura_by_date.get(d)
         if not oura_row:
             continue
-        sleep_score = oura_row.get("sleep_score")
-        if sleep_score is None:
+        x_val = oura_row.get(field)
+        if x_val is None:
             continue
         points.append({
             "date": d,
             "mood": float(r["mood"]),
-            "sleep": float(sleep_score),
+            "x": float(x_val),
+            # Keep a couple of secondary metrics in hover for context.
+            "sleep_score": oura_row.get("sleep_score"),
             "readiness": oura_row.get("readiness_score"),
         })
 
     if len(points) < 3:
         st.markdown(
-            '<div class="min-data-msg">⚠️ Need at least 3 days with both a reflection '
-            'and Oura data to plot. Keep journaling!</div>',
+            f'<div class="min-data-msg">Need at least 3 days with both a reflection '
+            f'and {metric_label.lower()} data to plot. Keep journaling.</div>',
             unsafe_allow_html=True,
         )
         return
 
-    sleep_vals = [p["sleep"] for p in points]
+    x_vals    = [p["x"] for p in points]
     mood_vals = [p["mood"] for p in points]
-    dates = [p["date"] for p in points]
-    readiness_vals = [p["readiness"] for p in points]
+    dates     = [p["date"] for p in points]
 
-    hover = [
-        f"<b>{d}</b><br>Mood: {m}<br>Sleep: {int(s)}"
-        + (f"<br>Readiness: {int(rd)}" if rd is not None else "")
-        for d, m, s, rd in zip(dates, mood_vals, sleep_vals, readiness_vals)
-    ]
+    x_unit_suffix = f" {unit}" if unit else ""
+    hover = []
+    for p in points:
+        bits = [f"<b>{p['date']}</b>", f"Mood: {p['mood']}", f"{metric_label}: {int(p['x'])}{x_unit_suffix}"]
+        # Tuck in the other metric for context where available (skip if the
+        # selected metric already covers it).
+        if field != "sleep_score" and p.get("sleep_score") is not None:
+            bits.append(f"Sleep: {int(p['sleep_score'])}")
+        if field != "readiness_score" and p.get("readiness") is not None:
+            bits.append(f"Readiness: {int(p['readiness'])}")
+        hover.append("<br>".join(bits))
 
     fig = go.Figure()
 
-    # Scatter points
+    # Scatter points — colored by mood so the eye reads vertical position twice.
     fig.add_trace(go.Scatter(
-        x=sleep_vals,
+        x=x_vals,
         y=mood_vals,
         mode="markers",
         marker=dict(
@@ -395,8 +412,8 @@ def render_mood_sleep_chart(reflection_rows: list[dict],
 
     # Linear trendline if enough points
     if len(points) >= 5:
-        coeffs = np.polyfit(sleep_vals, mood_vals, 1)
-        x_line = np.linspace(min(sleep_vals), max(sleep_vals), 50)
+        coeffs = np.polyfit(x_vals, mood_vals, 1)
+        x_line = np.linspace(min(x_vals), max(x_vals), 50)
         y_line = np.polyval(coeffs, x_line)
         fig.add_trace(go.Scatter(
             x=x_line, y=y_line,
@@ -406,48 +423,66 @@ def render_mood_sleep_chart(reflection_rows: list[dict],
             hoverinfo="skip",
             showlegend=False,
         ))
-
-        # Pearson correlation
-        corr = float(np.corrcoef(sleep_vals, mood_vals)[0, 1])
+        corr = float(np.corrcoef(x_vals, mood_vals)[0, 1])
         corr_label = f"r = {corr:+.2f}"
     else:
+        corr = None
         corr_label = ""
 
+    x_axis_title = f"{metric_label}{x_unit_suffix}".strip()
     fig.update_layout(
         paper_bgcolor="#f7f6f2",
         plot_bgcolor="#f7f6f2",
         margin=dict(l=20, r=20, t=30, b=20),
-        xaxis=dict(title="Sleep score", showgrid=True, gridcolor="#e5e5e0",
+        xaxis=dict(title=x_axis_title, showgrid=True, gridcolor="#e5e5e0",
                    zeroline=False, color="#2a2a2a"),
         yaxis=dict(title="Mood (1–10)", showgrid=True, gridcolor="#e5e5e0",
                    zeroline=False, color="#2a2a2a", range=[0.5, 10.5]),
         font=dict(family="DM Sans"),
         height=380,
         title=dict(
-            text=f"<span style='color:#888;font-size:0.9rem'>{len(points)} matched days  ·  {corr_label}</span>",
+            text=f"<span style='color:#888;font-size:0.9rem'>{len(points)} matched days &nbsp;&middot;&nbsp; {corr_label}</span>",
             x=0.02, xanchor="left",
         ),
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
-    # Quick interpretation
-    if len(points) >= 5:
-        if corr >= 0.4:
-            interpretation = "Your mood tends to track sleep meaningfully — better sleep, better days."
-            tone = "#3dab7a"
-        elif corr >= 0.15:
-            interpretation = "There's a mild positive link between sleep and mood here."
-            tone = "#d4850a"
-        elif corr <= -0.15:
-            interpretation = "Surprisingly, more sleep correlates with lower mood in your data — worth digging into."
-            tone = "#e05a3a"
-        else:
-            interpretation = "No clear sleep-mood pattern yet — your mood may be driven by other factors."
-            tone = "#888"
-        st.markdown(
-            f'<div style="background:#f0efe8; border-left:4px solid {tone};'
-            f'border-radius:8px; padding:0.7rem 1rem; margin-top:0.4rem;'
-            f'color:#2a2a2a; font-size:0.92rem">{interpretation}</div>',
-            unsafe_allow_html=True,
+    # ── Plain-English interpretation ────────────────────────────────────────
+    # For lower-is-better metrics (resting HR), invert the sign of r when
+    # picking copy so a NEGATIVE correlation reads as the favorable pattern
+    # ("lower RHR days have higher mood"). The label stays neutral about
+    # direction otherwise — we just describe what's there.
+    if corr is None:
+        return
+    metric_lower = metric_label.lower()
+    effective = -corr if lower_is_better else corr
+    if effective >= 0.4:
+        interpretation = (
+            f"Your mood tends to track {metric_lower} meaningfully — "
+            f"{'lower' if lower_is_better else 'better'} {metric_lower}, better days."
         )
+        tone = "#3dab7a"
+    elif effective >= 0.15:
+        interpretation = f"There's a mild positive link between {metric_lower} and mood here."
+        tone = "#d4850a"
+    elif effective <= -0.15:
+        # The opposite direction from what you'd typically expect.
+        direction_phrase = (
+            f"higher {metric_lower}" if lower_is_better else f"lower {metric_lower}"
+        )
+        interpretation = (
+            f"Surprisingly, {direction_phrase} correlates with higher mood in your data — "
+            f"worth digging into."
+        )
+        tone = "#e05a3a"
+    else:
+        interpretation = (
+            f"No clear {metric_lower}-mood pattern yet — your mood may be driven by other factors."
+        )
+        tone = "#888"
+    st.markdown(
+        f'<div style="background:#f0efe8; border-left:4px solid {tone};'
+        f'border-radius:8px; padding:0.7rem 1rem; margin-top:0.4rem;'
+        f'color:#2a2a2a; font-size:0.92rem">{interpretation}</div>',
+        unsafe_allow_html=True,
+    )

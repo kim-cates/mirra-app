@@ -11,73 +11,126 @@ import plotly.graph_objects as go
 import oura
 import oura_ui
 from oura import user_today
+from intro_page import render_intro_page, user_has_seen_intro
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Mirra", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="Mirra", layout="centered")
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-color: #f7f6f2; }
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-color: #faf9f5; color: #2a2a2a; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 #MainMenu, footer, header { visibility: hidden; }
-.block-container { padding: 2rem 2rem 4rem 2rem; max-width: 1200px; }
+.block-container { padding: 1.6rem 2rem 4rem 2rem; max-width: 1180px; }
 
-/* Tab styling */
-.stTabs [data-baseweb="tab-list"] { gap: 4px; background: #eeeee8; border-radius: 12px; padding: 4px; }
-.stTabs [data-baseweb="tab"] {
-    border-radius: 9px; padding: 6px 16px; font-size: 0.88rem;
-    font-weight: 500; color: #888; background: transparent; border: none;
+/* Tab styling — slimmer, lower-contrast, more typographic */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2px; background: transparent; border-bottom: 1px solid #ece9df;
+    border-radius: 0; padding: 0 0 0 4px; margin-bottom: 1rem;
 }
-.stTabs [aria-selected="true"] { background: white !important; color: #1a1a1a !important; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-.stTabs [data-baseweb="tab-panel"] { padding-top: 1.6rem; }
+.stTabs [data-baseweb="tab"] {
+    border-radius: 0; padding: 10px 18px; font-size: 0.86rem;
+    font-weight: 500; color: #999; background: transparent; border: none;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+.stTabs [data-baseweb="tab"]:hover { color: #555; }
+.stTabs [aria-selected="true"] {
+    background: transparent !important; color: #1a1a1a !important;
+    font-weight: 600; box-shadow: none !important;
+    border-bottom: 2px solid #3dab7a !important;
+}
+.stTabs [data-baseweb="tab-panel"] { padding-top: 1.4rem; }
 
-.date-label { font-size: 0.88rem; color: #888; margin-bottom: 0.1rem; }
-.title-text { font-family: 'Lora', serif; font-size: 1.75rem; font-weight: 700; color: #1a1a1a; margin: 0; }
-.streak-badge { background:#e8f5f0; border:1.5px solid #3dab7a; color:#2a8a5e; padding:0.35rem 0.9rem; border-radius:999px; font-size:0.88rem; font-weight:600; }
-.section-label { font-size: 1.05rem; font-weight: 600; color: #1a1a1a; margin-bottom: 0.5rem; margin-top: 1.4rem; }
+/* Headings + labels */
+.date-label { font-size: 0.82rem; color: #999; margin-bottom: 0.15rem; letter-spacing: 0.02em; }
+.title-text { font-family: 'Lora', serif; font-size: 1.8rem; font-weight: 600; color: #1a1a1a; margin: 0; letter-spacing: -0.01em; }
+.streak-badge {
+    background: transparent; border: 1px solid #3dab7a; color: #2a8a5e;
+    padding: 0.3rem 0.9rem; border-radius: 999px;
+    font-size: 0.82rem; font-weight: 500; letter-spacing: 0.01em;
+}
+.section-label {
+    font-size: 0.72rem; font-weight: 600; color: #888;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    margin-bottom: 0.7rem; margin-top: 1.8rem;
+}
 
-textarea { background-color: #f0efe8 !important; border: 1.5px solid #ddd !important; border-radius: 12px !important; font-family: 'DM Sans', sans-serif !important; font-size: 1rem !important; color: #2a2a2a !important; }
-textarea:focus { border-color: #3dab7a !important; }
+/* Inputs */
+textarea {
+    background-color: #ffffff !important; border: 1px solid #ece9df !important;
+    border-radius: 10px !important; font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.98rem !important; color: #2a2a2a !important;
+    transition: border-color 0.15s ease !important;
+}
+textarea:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61,171,122,0.08) !important; }
 
 .stSlider > div > div > div > div { background-color: #3dab7a !important; }
-[data-testid="stSlider"] [role="slider"] { background-color: #3dab7a !important; border: 2px solid white !important; box-shadow: 0 2px 6px rgba(61,171,122,0.4) !important; }
-.mood-value { font-size: 1.5rem; font-weight: 700; color: #3dab7a; }
+[data-testid="stSlider"] [role="slider"] {
+    background-color: #3dab7a !important; border: 2px solid white !important;
+    box-shadow: 0 1px 4px rgba(61,171,122,0.35) !important;
+}
+.mood-value { font-family: 'Lora', serif; font-size: 1.6rem; font-weight: 600; color: #3dab7a; letter-spacing: -0.01em; }
 
-.keywords-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0.5rem; }
-.kw-chip { display:inline-block; padding:5px 14px; border-radius:999px; font-size:0.88rem; font-weight:500; background:#e8f5f0; border:1.5px solid #3dab7a; color:#2a7a55; }
-.kw-chip-neutral { background:#f5f5f2; border:1.5px solid #ccc; color:#555; }
-.kw-header { display:flex; justify-content:space-between; align-items:center; }
-.kw-ai-label { font-size:0.78rem; color:#aaa; }
-.divider { border:none; border-top:1px solid #e5e5e0; margin:1.4rem 0; }
+/* Keyword chips */
+.keywords-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 0.3rem; }
+.kw-chip {
+    display: inline-block; padding: 4px 12px; border-radius: 999px;
+    font-size: 0.82rem; font-weight: 500;
+    background: #e8f5f0; border: 1px solid #c9e4d6; color: #2a7a55;
+}
+.kw-chip-neutral { background: #f5f4ee; border: 1px solid #e5e2d6; color: #666; }
+.kw-header { display: flex; justify-content: space-between; align-items: center; }
+.kw-ai-label { font-size: 0.74rem; color: #aaa; letter-spacing: 0.04em; }
+.divider { border: none; border-top: 1px solid #ece9df; margin: 1.8rem 0; }
 
-.stat-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:0.6rem; }
-.stat-card { background:#f0efe8; border-radius:14px; padding:1rem 1.1rem 0.9rem; }
-.stat-card-label { font-size:0.7rem; font-weight:600; letter-spacing:0.08em; color:#888; text-transform:uppercase; margin-bottom:4px; }
-.stat-card-value { font-family:'Lora',serif; font-size:1.85rem; font-weight:700; color:#1a1a1a; line-height:1.1; }
-.stat-card-sub { font-size:0.8rem; color:#999; margin-top:3px; }
+/* Feelings */
+.feeling-name { font-size: 0.95rem; font-weight: 500; color: #2a2a2a; padding-top: 8px; }
+.feeling-hint { color: #888; font-size: 0.86rem; margin: 0.3rem 0 0.8rem; line-height: 1.55; }
+.feeling-skip { color: #aaa; font-size: 0.85rem; font-style: italic; margin-top: 0.4rem; }
 
-.save-msg { background:#e8f5f0; border-left:4px solid #3dab7a; border-radius:8px; padding:0.7rem 1rem; color:#1e6b45; font-weight:500; margin-top:0.8rem; }
+/* Stat cards — cleaner white-on-cream */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 0.4rem; }
+.stat-card {
+    background: white; border: 1px solid #ece9df;
+    border-radius: 12px; padding: 1rem 1.2rem 0.9rem;
+}
+.stat-card-label {
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.12em;
+    color: #999; text-transform: uppercase; margin-bottom: 6px;
+}
+.stat-card-value { font-family: 'Lora', serif; font-size: 1.9rem; font-weight: 600; color: #1a1a1a; line-height: 1.05; letter-spacing: -0.01em; }
+.stat-card-sub { font-size: 0.78rem; color: #aaa; margin-top: 4px; }
+
+.save-msg {
+    background: #f0f8f4; border: 1px solid #c9e4d6;
+    border-radius: 8px; padding: 0.65rem 1rem; color: #1e6b45;
+    font-weight: 500; margin-top: 0.8rem; font-size: 0.92rem;
+}
 
 /* Login page */
-.login-wrap { max-width: 420px; margin: 0 auto; padding-top: 0.5rem; }
-.login-logo { text-align: center; margin-bottom: 1.2rem; }
-.login-title { font-family: 'Lora', serif; font-size: 2rem; font-weight: 700; color: #1a1a1a; text-align: center; margin-bottom: 0.2rem; }
-.login-sub { color: #888; font-size: 0.92rem; text-align: center; letter-spacing: 0.04em; margin-bottom: 1.2rem; }
-.login-card { background: white; border-radius: 18px; padding: 1.4rem 2rem 2rem; box-shadow: 0 2px 20px rgba(0,0,0,0.07); }
-.login-tabs { display: flex; gap: 0; background: #f0efe8; border-radius: 10px; padding: 3px; margin-bottom: 1.4rem; }
-.login-tab { flex: 1; text-align: center; padding: 8px; border-radius: 8px; font-size: 0.9rem; font-weight: 500; color: #888; cursor: pointer; }
-.login-tab-active { background: white; color: #1a1a1a; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.login-wrap { max-width: 400px; margin: 0 auto; padding-top: 1rem; }
+.login-logo { text-align: center; margin-bottom: 1.4rem; }
+.login-title { font-family: 'Lora', serif; font-size: 2rem; font-weight: 600; color: #1a1a1a; text-align: center; margin-bottom: 0.3rem; letter-spacing: -0.01em; }
+.login-sub { color: #999; font-size: 0.74rem; text-align: center; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 1.8rem; font-weight: 500; }
 .logout-btn { position: fixed; top: 14px; right: 18px; z-index: 999; }
-/* Kill phantom empty block above first login input */
 .login-card > div:first-child:empty { display: none; }
 .block-container > div:first-child { padding-top: 0 !important; }
 
-.insight-card { background:#f0efe8; border-radius:14px; padding:1.2rem 1.4rem; margin-bottom:1rem; line-height:1.7; color:#2a2a2a; font-size:0.97rem; }
-.insight-header { font-family:'Lora',serif; font-size:1.3rem; font-weight:700; color:#1a1a1a; margin-bottom:1rem; }
-.min-data-msg { background:#fff8e8; border:1.5px solid #f0c040; border-radius:12px; padding:1rem 1.2rem; color:#7a5a10; font-size:0.92rem; margin-top:1rem; }
+/* Insight + data cards */
+.insight-card {
+    background: white; border: 1px solid #ece9df;
+    border-radius: 12px; padding: 1.3rem 1.5rem; margin-bottom: 1rem;
+    line-height: 1.7; color: #2a2a2a; font-size: 0.96rem;
+}
+.insight-header { font-family: 'Lora', serif; font-size: 1.25rem; font-weight: 600; color: #1a1a1a; margin-bottom: 0.9rem; letter-spacing: -0.005em; }
+.min-data-msg {
+    background: white; border: 1px solid #ece9df; border-left: 3px solid #d4a843;
+    border-radius: 8px; padding: 0.9rem 1.2rem; color: #6a5520; font-size: 0.92rem; margin-top: 1rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -129,14 +182,29 @@ def get_embeddings(texts: list[str]) -> np.ndarray:
     return embedder.encode(texts, show_progress_bar=False)
 
 
+# Preset feelings shown in the multiselect on the daily reflection page.
+# Users can also type custom feelings (accept_new_options=True) — this is just
+# a starting palette covering common positive/neutral/negative affect words.
+PRESET_FEELINGS = [
+    "anxious", "stressed", "overwhelmed", "depressed", "sad", "frustrated", "angry",
+    "tired", "neutral", "present", "calm", "relaxed", "content", "happy",
+    "grateful", "energized", "focused", "excited",
+]
+
+
 # ── Supabase helpers ──────────────────────────────────────────────────────────
-def save_reflection(content: str, mood: float, keywords: list[str], user_id: str):
+# Requires `reflections` to have a `feelings` JSONB column (nullable). Add via:
+#   alter table reflections add column feelings jsonb;
+# Stored shape: [{"name": "anxious", "intensity": 7}, {"name": "calm", "intensity": null}, ...]
+def save_reflection(content: str, mood: float, keywords: list[str],
+                    user_id: str, feelings: list[dict] | None = None):
     today = user_today().isoformat()
     supabase.table("reflections").upsert({
         "entry_date": today,
         "content": content,
         "mood": mood,
         "keywords": keywords,
+        "feelings": feelings or [],
         "user_id": user_id,
         "updated_at": datetime.utcnow().isoformat(),
     }, on_conflict="user_id,entry_date").execute()
@@ -262,7 +330,7 @@ def render_bertopic_tab(rows):
 
     MIN_ENTRIES = 10
     if len(rows) < MIN_ENTRIES:
-        st.markdown(f'<div class="min-data-msg">⚠️ Topic modeling needs at least <strong>{MIN_ENTRIES} entries</strong>. You have <strong>{len(rows)}</strong> so far — keep journaling!</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="min-data-msg">Topic modeling needs at least <strong>{MIN_ENTRIES} entries</strong>. You have <strong>{len(rows)}</strong> so far &mdash; keep journaling.</div>', unsafe_allow_html=True)
         return
 
     texts = [r["content"] for r in rows]
@@ -275,15 +343,15 @@ def render_bertopic_tab(rows):
 
     status = st.status("Building topic map…", expanded=True)
     with status:
-        st.write("⏳ Loading NLP models…")
+        st.write("Loading NLP models…")
         load_nlp_models()
-        st.write("🔢 Embedding + clustering…")
+        st.write("Embedding and clustering…")
         try:
             reduced, topics, topic_labels, text_list = run_topic_map(tuple(texts), tuple(moods))
         except Exception as e:
             st.error(f"Topic map failed: {e}")
             return
-        st.write("✅ Done!")
+        st.write("Done.")
     status.update(label="Topic map ready", state="complete", expanded=False)
 
     # Align dates/moods to text_list (filtered) by matching content
@@ -343,8 +411,8 @@ def render_bertopic_tab(rows):
                 <div style="font-weight:600; color:#1a1a1a; margin-bottom:4px">Cluster {tid}</div>
                 <div style="font-size:0.88rem; color:#555; line-height:1.4; margin-bottom:6px">{label}</div>
                 <div style="font-size:0.78rem; color:#888">
-                    <span style="margin-right:12px">📊 {count} entries</span>
-                    <span>😊 avg mood {avg_m}</span>
+                    <span style="margin-right:14px">{count} entries</span>
+                    <span>avg mood {avg_m}</span>
                 </div>
             </div>
         </div>"""
@@ -536,25 +604,25 @@ def render_dendrogram_tab(rows):
 
     MIN_ENTRIES = 8
     if len(rows) < MIN_ENTRIES:
-        st.markdown(f'<div class="min-data-msg">⚠️ The dendrogram needs at least <strong>{MIN_ENTRIES} entries</strong>. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="min-data-msg">The dendrogram needs at least <strong>{MIN_ENTRIES} entries</strong>. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
         return
 
     # ── Extract meaningful noun phrases (syntactic approach) ──────────────────
     unique_phrases = extract_noun_phrase_clusters(rows, top_n=60)
 
     if len(unique_phrases) < 4:
-        st.markdown('<div class="min-data-msg">⚠️ Not enough recurring 3–5 word noun phrases yet. Keep logging!</div>', unsafe_allow_html=True)
+        st.markdown('<div class="min-data-msg">Not enough recurring 3&ndash;5 word noun phrases yet. Keep logging.</div>', unsafe_allow_html=True)
         return
 
     # ── Semantic query input ───────────────────────────────────────────────────
     st.markdown("""
-    <div style="background:#f0efe8; border-radius:14px; padding:1rem 1.2rem 0.6rem; margin-bottom:1rem;">
-      <div style="font-size:0.82rem; font-weight:600; letter-spacing:0.06em; color:#888; text-transform:uppercase; margin-bottom:0.5rem;">
-        🔍 Explore a theme
+    <div style="background:white; border:1px solid #ece9df; border-radius:12px; padding:1.1rem 1.3rem 0.8rem; margin-bottom:1rem;">
+      <div style="font-size:0.72rem; font-weight:600; letter-spacing:0.14em; color:#888; text-transform:uppercase; margin-bottom:0.6rem;">
+        Explore a theme
       </div>
-      <div style="font-size:0.92rem; color:#555; margin-bottom:0.7rem; line-height:1.5;">
+      <div style="font-size:0.92rem; color:#555; margin-bottom:0.7rem; line-height:1.55;">
         Enter a concept or feeling and the dendrogram will show the <strong>top 25 phrases from your reflections</strong>
-        most semantically related to it — revealing hidden thought patterns and contextual themes around that topic.
+        most semantically related to it &mdash; revealing hidden thought patterns and contextual themes around that topic.
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -581,29 +649,29 @@ def render_dendrogram_tab(rows):
     st.markdown(f'<div style="color:#aaa; font-size:0.85rem; margin:0.3rem 0 0.8rem">{mode_label}</div>', unsafe_allow_html=True)
 
     # ── Run button — stores results in session_state so selectbox reruns don't wipe them ──
-    run_clicked = st.button("\u25b6 Run Dendrogram", type="primary", key="run_dendro")
+    run_clicked = st.button("Run Dendrogram", type="primary", key="run_dendro")
 
     if run_clicked:
         status = st.status("Building dendrogram…", expanded=True)
         with status:
-            st.write("⏳ Loading NLP models…")
+            st.write("Loading NLP models…")
             load_nlp_models()
 
             # Apply semantic filter if a query was entered
             if query.strip():
-                st.write(f"🔎 Finding top 25 phrases related to '{query.strip()}'…")
+                st.write(f"Finding top 25 phrases related to '{query.strip()}'…")
                 phrases_to_cluster = get_top_similar_phrases(query.strip(), unique_phrases, top_n=25)
                 if len(phrases_to_cluster) < 4:
                     st.error("Not enough matching phrases for the query. Try a broader theme.")
                     # Show top similar phrases for debugging
                     all_sims = get_top_similar_phrases(query.strip(), unique_phrases, top_n=min(15, len(unique_phrases)))
-                    st.warning(f"**Top phrases found similar to '{query.strip()}':**\n" + "\n".join([f"• {p}" for p in all_sims]))
+                    st.warning(f"**Top phrases found similar to '{query.strip()}':**\n" + "\n".join([f"- {p}" for p in all_sims]))
                     return
             else:
                 phrases_to_cluster = unique_phrases
 
-            st.write("📝 Embedding phrases with sentence-transformers…")
-            st.write("🔗 Clustering semantically similar phrases…")
+            st.write("Embedding phrases with sentence-transformers…")
+            st.write("Clustering semantically similar phrases…")
             try:
                 phrases, Z, cluster_ids = run_dendrogram(tuple(phrases_to_cluster))
             except Exception as e:
@@ -612,7 +680,7 @@ def render_dendrogram_tab(rows):
             if phrases is None:
                 st.info("Not enough unique phrases yet.")
                 return
-            st.write("\u2705 Done!")
+            st.write("Done.")
         status.update(label="Dendrogram ready", state="complete", expanded=False)
 
         # Build cluster metadata and store everything in session_state
@@ -647,9 +715,9 @@ def render_dendrogram_tab(rows):
     # ── Query badge (if active) ───────────────────────────────────────────────
     if active_query:
         st.markdown(
-            f'<div style="display:inline-flex;align-items:center;gap:8px;background:#e8f5f0;border:1.5px solid #3dab7a;'
-            f'border-radius:999px;padding:5px 14px;font-size:0.85rem;color:#2a7a55;margin-bottom:0.8rem;">'
-            f'<span>🎯</span><span>Showing phrases related to <strong>{active_query}</strong></span>'
+            f'<div style="display:inline-flex;align-items:center;gap:8px;background:transparent;border:1px solid #3dab7a;'
+            f'border-radius:999px;padding:4px 14px;font-size:0.83rem;color:#2a7a55;margin-bottom:0.8rem;">'
+            f'<span>Showing phrases related to <strong>{active_query}</strong></span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -722,7 +790,7 @@ def render_login_page():
         unsafe_allow_html=True,
     )
     st.markdown('<div class="login-title">mirra</div>', unsafe_allow_html=True)
-    st.markdown('<div class="login-sub">WHERE PATTERNS EVOLVE INTO AWARENESS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-sub">Where patterns become awareness</div>', unsafe_allow_html=True)
 
     mode = st.radio("", ["Sign in", "Create account"], horizontal=True, label_visibility="collapsed", key="auth_mode")
 
@@ -774,13 +842,21 @@ if not st.session_state.get("logged_in"):
     render_login_page()
     st.stop()
 
+# Show the welcome intro page once per user. After they dismiss it (button on
+# the intro page calls `mark_intro_seen`), `has_seen_intro` is True and this
+# gate falls through.
+if not user_has_seen_intro(supabase, st.session_state["user_id"]):
+    render_intro_page(supabase, st.session_state["user_id"])
+    st.stop()
+
 # Logout button
 with st.container():
     col_space, col_logout = st.columns([5, 1])
     with col_logout:
         if st.button("Sign out", key="logout"):
             for k in ["logged_in", "user_id", "username", "keywords",
-                      "save_success", "dendro_results", "insight_report"]:
+                      "save_success", "dendro_results", "insight_report",
+                      "has_seen_intro"]:
                 st.session_state.pop(k, None)
             st.cache_data.clear()
             st.rerun()
@@ -789,17 +865,365 @@ with st.container():
 
 
 # ── Insights agent ────────────────────────────────────────────────────────────
-def render_insights_tab(rows, oura_by_date):
-    st.markdown('<p class="title-text">Insights</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">Claude analytics agent · mood trends · keyword correlations · reflection analytics</div>', unsafe_allow_html=True)
+def render_weekly_insights_tab(rows, oura_by_date):
+    """Rolling last-7-days Oura summary + mood histogram (this-week vs all-time
+    with KDE overlays) + top weekly keywords/feelings."""
+    st.markdown('<p class="title-text">Weekly insights</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#888; font-size:0.92rem; margin-bottom:1.6rem">'
+        'Your last 7 days &middot; Oura averages, mood distribution, recurring themes'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    today = user_today()
+    week_start = today - timedelta(days=6)  # rolling 7 days inclusive
+    week_iso_set = {(week_start + timedelta(days=i)).isoformat() for i in range(7)}
+
+    week_rows = [r for r in rows if r["entry_date"] in week_iso_set]
+    if not week_rows and not any(d in oura_by_date for d in week_iso_set):
+        st.markdown(
+            '<div class="min-data-msg">No reflections or Oura data in the last 7 days yet.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    # ── Oura summary for the week ─────────────────────────────────────────────
+    st.markdown('<div class="section-label">Oura, this week</div>', unsafe_allow_html=True)
+
+    def _week_values(field: str) -> list[tuple[str, float]]:
+        """Return [(iso_date, value)] for this metric across the rolling week,
+        sorted oldest → newest, skipping null days."""
+        out: list[tuple[str, float]] = []
+        for i in range(7):
+            d = (week_start + timedelta(days=i)).isoformat()
+            v = (oura_by_date.get(d) or {}).get(field)
+            if v is not None:
+                out.append((d, float(v)))
+        return out
+
+    def _week_avg(field: str) -> float | None:
+        vs = [v for _, v in _week_values(field)]
+        return round(sum(vs) / len(vs), 1) if vs else None
+
+    def _most_recent(field: str) -> tuple[str, float] | None:
+        """Most recent non-null value this week (date, value). Sleep score
+        and readiness usually post in the morning so for those this is
+        normally today; activity/resting HR lag a day, so for those it's
+        usually yesterday. We don't hardcode the offset — just walk back
+        from today through the week and take the first hit."""
+        for i in range(7):
+            d = (today - timedelta(days=i)).isoformat()
+            if d not in week_iso_set:
+                continue
+            v = (oura_by_date.get(d) or {}).get(field)
+            if v is not None:
+                return d, float(v)
+        return None
+
+    # `lower_is_better` flips the "trending well" coloring for resting HR —
+    # for that metric a value BELOW the week average is the favorable signal.
+    metric_specs = [
+        # (label,      field,            accent,    unit,    lower_is_better)
+        ("Sleep",      "sleep_score",     "#3dab7a", "",      False),
+        ("Readiness",  "readiness_score", "#3dab7a", "",      False),
+        ("Activity",   "activity_score",  "#d4850a", "",      False),
+        ("Resting HR", "resting_hr",      "#5b6fa6", " bpm",  True),
+    ]
+
+    def _recent_label(d: str) -> str:
+        """Human-readable tag for how recent the most-recent value is."""
+        today_iso = today.isoformat()
+        if d == today_iso:
+            return "today"
+        if d == (today - timedelta(days=1)).isoformat():
+            return "yesterday"
+        delta_days = (today - date.fromisoformat(d)).days
+        return f"{delta_days}d ago"
+
+    cards_html = '<div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:0.3rem 0 1rem">'
+    for label, field, accent, unit, lower_is_better in metric_specs:
+        recent = _most_recent(field)
+        avg = _week_avg(field)
+        # Headline value = the most recent reading. Subtitle = week average,
+        # plus an inline up/down arrow showing direction vs avg.
+        if recent is None:
+            headline = "&mdash;"
+            recent_tag = "no data this week"
+            sub_str = ""
+        else:
+            r_date, r_val = recent
+            headline = f"{r_val:.0f}{unit}"
+            recent_tag = _recent_label(r_date)
+            if avg is not None:
+                diff = r_val - avg
+                # Favorable direction depends on metric (resting HR lower-is-better).
+                favorable = (diff < 0) if lower_is_better else (diff > 0)
+                # Don't color tiny noise — call it flat if |diff| is small
+                # relative to the average (under 3% of the avg).
+                noise_threshold = max(0.5, abs(avg) * 0.03)
+                if abs(diff) < noise_threshold:
+                    arrow, arrow_color = "&rarr;", "#999"
+                elif favorable:
+                    arrow = "&uarr;" if diff > 0 else "&darr;"
+                    arrow_color = "#3dab7a"
+                else:
+                    arrow = "&uarr;" if diff > 0 else "&darr;"
+                    arrow_color = "#c25540"
+                sub_str = (
+                    f"avg {avg:g}{unit} "
+                    f"<span style='color:{arrow_color}; font-weight:600'>{arrow} {diff:+.1f}</span>"
+                )
+            else:
+                sub_str = ""
+        cards_html += f"""
+        <div style="background:white; border:1px solid #ece9df; border-radius:12px; padding:0.85rem 1rem 0.9rem;">
+          <div style="display:flex; align-items:center; gap:7px; margin-bottom:6px;">
+            <span style="display:inline-block; width:6px; height:6px; border-radius:999px; background:{accent};"></span>
+            <span style="font-size:0.66rem; font-weight:600; color:#999; letter-spacing:0.14em; text-transform:uppercase;">{label}</span>
+          </div>
+          <div style="font-family:'Lora',serif; font-size:1.6rem; font-weight:600; color:#1a1a1a; line-height:1.05; letter-spacing:-0.01em;">{headline}</div>
+          <div style="font-size:0.72rem; color:#aaa; margin-top:2px">{recent_tag}</div>
+          <div style="font-size:0.76rem; color:#888; margin-top:4px">{sub_str}</div>
+        </div>"""
+    cards_html += "</div>"
+    st.markdown(cards_html, unsafe_allow_html=True)
+
+    # ── Mini dot-plots: this week's distribution per metric ───────────────────
+    # Sample size is only ~7, so a traditional histogram or KDE would be misleading.
+    # A 1D dot plot shows each day as its own point and lets us visually compare
+    # the most recent reading (large filled dot) to the rest of the week
+    # (small grey dots) and the average (vertical sage line).
+    mini_cols = st.columns(4)
+    for (label, field, accent, unit, lower_is_better), col in zip(metric_specs, mini_cols):
+        pts = _week_values(field)
+        recent = _most_recent(field)
+        avg = _week_avg(field)
+        with col:
+            if not pts or recent is None:
+                # Empty placeholder keeps the row aligned visually.
+                st.markdown(
+                    '<div style="height:90px; display:flex; align-items:center; justify-content:center; color:#bbb; font-size:0.78rem; background:white; border:1px solid #ece9df; border-radius:12px;">no data</div>',
+                    unsafe_allow_html=True,
+                )
+                continue
+            recent_date, recent_val = recent
+            values = [v for _, v in pts]
+            # Stretch x-range a bit so the dots aren't pinned to the edges.
+            v_min, v_max = min(values), max(values)
+            pad = max(1.0, (v_max - v_min) * 0.15)
+            x_range = [v_min - pad, v_max + pad]
+
+            fig_mini = go.Figure()
+            # Non-recent points — small grey dots at y=0.
+            other_vals = [v for d, v in pts if d != recent_date]
+            if other_vals:
+                fig_mini.add_trace(go.Scatter(
+                    x=other_vals, y=[0] * len(other_vals),
+                    mode="markers",
+                    marker=dict(size=7, color="#cbc8bd", line=dict(width=0)),
+                    hovertemplate=f"{label}: %{{x:.0f}}{unit}<extra></extra>",
+                    showlegend=False,
+                ))
+            # Week-average vertical line so the user sees the recent dot's
+            # position relative to the central tendency, not just to other dots.
+            if avg is not None:
+                fig_mini.add_vline(
+                    x=avg, line=dict(color="#aaa", width=1, dash="dot"),
+                )
+            # Most recent point — larger, colored, ringed in white so it pops
+            # against the grey week-mates.
+            fig_mini.add_trace(go.Scatter(
+                x=[recent_val], y=[0],
+                mode="markers",
+                marker=dict(size=14, color=accent, line=dict(width=2, color="white")),
+                hovertemplate=f"{_recent_label(recent_date)}: %{{x:.0f}}{unit}<extra></extra>",
+                showlegend=False,
+            ))
+            fig_mini.update_layout(
+                height=90,
+                margin=dict(l=8, r=8, t=8, b=22),
+                paper_bgcolor="white", plot_bgcolor="white",
+                font=dict(family="DM Sans", color="#888", size=10),
+                xaxis=dict(
+                    range=x_range,
+                    showgrid=False, zeroline=False,
+                    tickmode="array",
+                    tickvals=[v_min, v_max],
+                    ticktext=[f"{v_min:g}", f"{v_max:g}"],
+                ),
+                yaxis=dict(
+                    range=[-0.6, 0.6],
+                    showticklabels=False, showgrid=False, zeroline=False,
+                    visible=False,
+                ),
+                showlegend=False,
+            )
+            st.plotly_chart(fig_mini, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Mood histogram: this week vs all-time, with KDE overlays ──────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Mood distribution</div>', unsafe_allow_html=True)
+
+    week_moods = [float(r["mood"]) for r in week_rows]
+    all_moods  = [float(r["mood"]) for r in rows]
+
+    # Gate: need a couple of weekly entries to plot anything meaningful. The
+    # all-time KDE needs slightly more (>=3 distinct values) before the kernel
+    # bandwidth is stable.
+    if len(week_moods) < 2 or len(all_moods) < 3:
+        st.markdown(
+            '<div class="min-data-msg">Add a few more reflections this week and overall to see the mood distribution.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        fig_hist = go.Figure()
+
+        # All-time distribution underneath (faint, normalized to density so the
+        # two histograms are comparable despite different sample sizes).
+        fig_hist.add_trace(go.Histogram(
+            x=all_moods, name="All time",
+            xbins=dict(start=1, end=10, size=0.5),
+            marker=dict(color="rgba(91,111,166,0.25)", line=dict(color="rgba(91,111,166,0.5)", width=1)),
+            histnorm="probability density",
+            hovertemplate="Mood %{x}<br>Density %{y:.2f}<extra>All time</extra>",
+        ))
+        # This week on top (sage).
+        fig_hist.add_trace(go.Histogram(
+            x=week_moods, name="This week",
+            xbins=dict(start=1, end=10, size=0.5),
+            marker=dict(color="rgba(61,171,122,0.55)", line=dict(color="#3dab7a", width=1)),
+            histnorm="probability density",
+            hovertemplate="Mood %{x}<br>Density %{y:.2f}<extra>This week</extra>",
+        ))
+
+        # KDE curves — a smoothed density estimate overlaid on each histogram.
+        # Done by hand with a Gaussian kernel so we don't pull in scipy just
+        # for this; bandwidth follows Silverman's rule of thumb.
+        def _kde(values: list[float], grid: np.ndarray) -> np.ndarray:
+            arr = np.asarray(values, dtype=float)
+            n = arr.size
+            if n < 2:
+                return np.zeros_like(grid)
+            std = float(np.std(arr, ddof=1)) or 1e-6
+            # Silverman's rule of thumb for univariate Gaussian KDE bandwidth.
+            bw = 1.06 * std * (n ** (-1 / 5))
+            # Vectorized Gaussian kernel sum across all sample points.
+            diffs = (grid[:, None] - arr[None, :]) / bw
+            kernels = np.exp(-0.5 * diffs ** 2) / (np.sqrt(2 * np.pi))
+            return kernels.sum(axis=1) / (n * bw)
+
+        x_grid = np.linspace(1, 10, 200)
+        kde_all  = _kde(all_moods,  x_grid)
+        kde_week = _kde(week_moods, x_grid)
+
+        fig_hist.add_trace(go.Scatter(
+            x=x_grid, y=kde_all, mode="lines", name="All-time trend",
+            line=dict(color="#5b6fa6", width=2), hoverinfo="skip",
+        ))
+        fig_hist.add_trace(go.Scatter(
+            x=x_grid, y=kde_week, mode="lines", name="This-week trend",
+            line=dict(color="#3dab7a", width=2.5), hoverinfo="skip",
+        ))
+
+        fig_hist.update_layout(
+            barmode="overlay",
+            paper_bgcolor="#faf9f5", plot_bgcolor="#faf9f5",
+            font=dict(family="DM Sans", color="#2a2a2a"),
+            height=340, margin=dict(l=20, r=20, t=20, b=40),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                bgcolor="rgba(255,255,255,0)", bordercolor="rgba(0,0,0,0)",
+            ),
+            xaxis=dict(title="Mood (1–10)", range=[1, 10], showgrid=False, color="#666"),
+            yaxis=dict(title="Density", showgrid=True, gridcolor="#ece9df", color="#666"),
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Quick comparison line
+        week_avg = round(float(np.mean(week_moods)), 1)
+        all_avg  = round(float(np.mean(all_moods)), 1)
+        delta = week_avg - all_avg
+        delta_label = (
+            f"<span style='color:#3dab7a'>+{delta:.1f}</span>" if delta >= 0.3 else
+            f"<span style='color:#c25540'>{delta:+.1f}</span>" if delta <= -0.3 else
+            f"<span style='color:#888'>{delta:+.1f}</span>"
+        )
+        st.markdown(
+            f"<div style='color:#666; font-size:0.88rem; margin-top:-0.6rem'>"
+            f"This week averages <strong>{week_avg}</strong> &middot; "
+            f"All-time averages <strong>{all_avg}</strong> &middot; "
+            f"Delta {delta_label}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Weekly trends: keywords + feelings ────────────────────────────────────
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    col_kw, col_feel = st.columns(2)
+
+    # Top keywords this week
+    week_kws: dict[str, int] = {}
+    for r in week_rows:
+        for k in (r.get("keywords") or []):
+            week_kws[k.lower()] = week_kws.get(k.lower(), 0) + 1
+    top_week_kws = sorted(week_kws.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+    with col_kw:
+        st.markdown('<div class="section-label" style="margin-top:0">Top keywords</div>', unsafe_allow_html=True)
+        if top_week_kws:
+            chips = '<div class="keywords-row">'
+            for kw, ct in top_week_kws:
+                chips += f'<span class="kw-chip">{kw} &middot; {ct}</span>'
+            chips += '</div>'
+            st.markdown(chips, unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:#aaa; font-size:0.88rem">No keywords yet this week.</div>', unsafe_allow_html=True)
+
+    # Top feelings this week — count occurrences and surface average intensity
+    # where rated. Skip-rated feelings count toward frequency but not avg intensity.
+    week_feel_count: dict[str, int] = {}
+    week_feel_sum: dict[str, float] = {}
+    week_feel_rated: dict[str, int] = {}
+    for r in week_rows:
+        for f in (r.get("feelings") or []):
+            name = (f.get("name") or "").lower().strip()
+            if not name:
+                continue
+            week_feel_count[name] = week_feel_count.get(name, 0) + 1
+            intensity = f.get("intensity")
+            if intensity is not None:
+                week_feel_sum[name] = week_feel_sum.get(name, 0.0) + float(intensity)
+                week_feel_rated[name] = week_feel_rated.get(name, 0) + 1
+    top_week_feel = sorted(week_feel_count.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+    with col_feel:
+        st.markdown('<div class="section-label" style="margin-top:0">Top feelings</div>', unsafe_allow_html=True)
+        if top_week_feel:
+            chips = '<div class="keywords-row">'
+            for name, ct in top_week_feel:
+                if week_feel_rated.get(name):
+                    avg_int = week_feel_sum[name] / week_feel_rated[name]
+                    chips += f'<span class="kw-chip">{name} &middot; {ct} ({avg_int:.1f}/10)</span>'
+                else:
+                    chips += f'<span class="kw-chip kw-chip-neutral">{name} &middot; {ct}</span>'
+            chips += '</div>'
+            st.markdown(chips, unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:#aaa; font-size:0.88rem">No feelings logged this week yet.</div>', unsafe_allow_html=True)
+
+
+def render_reflection_trends_tab(rows, oura_by_date):
+    st.markdown('<p class="title-text">Reflection trends</p>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.6rem">Long-horizon analytics &middot; mood trends &middot; biometric correlations &middot; AI-generated report</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 7
     if len(rows) < MIN_ENTRIES:
-        st.markdown(f'<div class="min-data-msg">⚠️ Insights need at least <strong>{MIN_ENTRIES} entries</strong> to surface patterns. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="min-data-msg">Reflection trends need at least <strong>{MIN_ENTRIES} entries</strong> to surface patterns. You have <strong>{len(rows)}</strong> so far.</div>', unsafe_allow_html=True)
         return
 
-    # ── Mood vs Sleep chart (renders only if Oura data exists) ──
-    oura_ui.render_mood_sleep_chart(rows, oura_by_date)
+    # ── Mood vs biometric scatter (user picks sleep / readiness / HRV / RHR / REM)
+    oura_ui.render_mood_vs_biometric_chart(rows, oura_by_date)
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
     # Build structured summary for Claude
@@ -887,7 +1311,7 @@ def render_insights_tab(rows, oura_by_date):
         kw_freq[k] = kw_freq.get(k, 0) + 1
     top_kws = sorted(kw_freq, key=kw_freq.get, reverse=True)[:10]
 
-    if st.button("✨ Generate insight report", type="primary"):
+    if st.button("Generate insight report", type="primary"):
         with st.spinner("Analyzing your reflections…"):
             prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
 
@@ -1061,6 +1485,134 @@ Be specific and reference actual keywords, dates, and biometric values from the 
         hover_unit="ms",
     )
 
+    # ── Mood + sleep stack (4 sleep variables, stacked on shared z-axis) ─────
+    # Each sleep series is standardised (z-scored) then shifted so its minimum
+    # is 0, which lets us stack the areas. Y-axis ticks are hidden since the
+    # numbers no longer carry real-world units; hover tooltips still show the
+    # raw values + native units (score, h, min) so the chart stays readable.
+    sleep_specs = [
+        # (oura field,         legend label,    hover unit,    fill color)
+        ("sleep_score",        "Sleep score",   "",            "#5b6fa6"),  # lavender
+        ("sleep_hours",        "Sleep hours",   "h",           "#4a8db3"),  # teal-blue
+        ("deep_sleep_min",     "Deep sleep",    "min",         "#7c5d99"),  # purple
+        ("rem_sleep_min",      "REM sleep",     "min",         "#c89556"),  # warm amber
+    ]
+    # Extract aligned raw + z-scored series for each sleep variable.
+    sleep_series: list[dict] = []
+    for field, label, unit, color in sleep_specs:
+        raw = [
+            float(oura_by_date[d][field])
+            if (oura_by_date.get(d) and oura_by_date[d].get(field) is not None)
+            else None
+            for d in mood_dates
+        ]
+        z, _, _ = _zscore(raw)
+        sleep_series.append({
+            "label": label, "unit": unit, "color": color, "raw": raw, "z": z,
+        })
+
+    def _fill_and_shift(z_vals: list[float | None]) -> list[float]:
+        """Stacked areas need a value at every x; missing days break the stack.
+        Forward-fill from the previous day, back-fill at the start. Then shift
+        so the minimum sits at 0 (lets the area stack from a baseline of 0
+        without negative-value clipping)."""
+        filled: list[float] = []
+        last: float | None = None
+        for v in z_vals:
+            if v is not None:
+                last = float(v)
+            filled.append(last if last is not None else 0.0)
+        # Back-fill leading None's with the first non-None value.
+        first_real = next((v for v in z_vals if v is not None), None)
+        if first_real is not None:
+            for i, v in enumerate(z_vals):
+                if v is not None:
+                    break
+                filled[i] = float(first_real)
+        # Shift so min is 0. If everything is the same value, leave as-is.
+        m = min(filled) if filled else 0.0
+        return [x - m for x in filled]
+
+    fig_mood_sleep = go.Figure()
+    # Stacked sleep areas. `stackgroup` makes the y-values cumulative; fills
+    # are translucent (alpha 0.4) so overlapping series read as layered bands
+    # rather than solid blocks.
+    def _rgba(hex_color: str, alpha: float) -> str:
+        """Convert '#rrggbb' to 'rgba(r,g,b,alpha)' for Plotly fill colors."""
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
+    BAND_ALPHA = 0.4
+
+    for s in sleep_series:
+        # Skip the trace entirely if this variable has no data at all.
+        if all(z is None for z in s["z"]):
+            continue
+        shifted = _fill_and_shift(s["z"])
+        # Build hover text from raw values so users see real units, not z-scores.
+        hover_text = []
+        for raw in s["raw"]:
+            if raw is None:
+                hover_text.append(f"{s['label']}: —")
+            elif s["unit"]:
+                hover_text.append(f"{s['label']}: {raw:.0f} {s['unit']}")
+            else:
+                hover_text.append(f"{s['label']}: {raw:.0f}")
+        fig_mood_sleep.add_trace(go.Scatter(
+            x=mood_dates, y=shifted,
+            mode="lines", name=s["label"],
+            stackgroup="sleep",
+            line=dict(width=0.5, color=s["color"], shape="spline", smoothing=0.6),
+            fillcolor=_rgba(s["color"], BAND_ALPHA),
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+        ))
+
+    # Mood on a secondary y-axis so its un-shifted z-scale doesn't get
+    # stretched by the stacked sleep total. Filled translucent green area
+    # underneath the dashed line — matches the alpha-0.4 treatment of the
+    # sleep bands so all five series read as the same visual family.
+    fig_mood_sleep.add_trace(go.Scatter(
+        x=mood_dates, y=mood_z, customdata=mood_values,
+        mode="lines+markers", name="Mood",
+        line=dict(color="#3dab7a", width=2.2, dash="dash"),
+        marker=dict(size=6, color="#3dab7a", line=dict(width=1, color="white")),
+        fill="tozeroy",
+        fillcolor=_rgba("#3dab7a", BAND_ALPHA),
+        yaxis="y2",
+        connectgaps=True,
+        hovertemplate="<b>%{x}</b><br>Mood: %{customdata:.1f}<extra></extra>",
+    ))
+
+    fig_mood_sleep.update_layout(
+        title="Mood & Sleep (standardised, stacked)",
+        xaxis_title="Date",
+        paper_bgcolor="#f7f6f2", plot_bgcolor="#f7f6f2",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=320,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(
+            x=0.01, y=0.99,
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(200,200,200,0.5)",
+            borderwidth=1,
+        ),
+        # Primary axis = stacked sleep total (hidden ticks, meaningless units).
+        yaxis=dict(
+            showticklabels=False, showgrid=True, zeroline=True,
+            zerolinecolor="rgba(150,150,150,0.3)", title_text="",
+        ),
+        # Secondary axis = mood z-score, also hidden — keeps the chart focused
+        # on shape comparisons rather than numeric reading.
+        yaxis2=dict(
+            overlaying="y", side="right",
+            showticklabels=False, showgrid=False, zeroline=False,
+            title_text="",
+        ),
+    )
+
     # KEYWORD FREQUENCY BAR CHART
     fig_kw = None
     if top_kws:
@@ -1087,15 +1639,15 @@ Be specific and reference actual keywords, dates, and biometric values from the 
             xaxis_tickangle=-45,
         )
 
-    # Display 2-column dashboard. The two mood charts stack in the left column
-    # so they sit alongside each other vertically (RHR and HRV are conceptually
-    # paired views of the same mood timeseries); the keyword chart stays on
-    # the right at its original size.
+    # Display 2-column dashboard. Left column stacks the two single-metric
+    # mood charts (RHR, HRV). Right column stacks the multi-series mood+sleep
+    # chart on top of the keyword frequency bar. Four charts total.
     col1, col2 = st.columns(2)
     with col1:
         st.plotly_chart(fig_mood_rhr, use_container_width=True)
         st.plotly_chart(fig_mood_hrv, use_container_width=True)
     with col2:
+        st.plotly_chart(fig_mood_sleep, use_container_width=True)
         if fig_kw:
             st.plotly_chart(fig_kw, use_container_width=True)
 
@@ -1205,16 +1757,22 @@ Be specific and reference actual keywords, dates, and biometric values from the 
         st.markdown('<div style="color:#bbb; font-size:0.9rem">Save today\'s reflection first to find similar past entries.</div>', unsafe_allow_html=True)
 
 
-# ── Today's reflection tab ────────────────────────────────────────────────────
-def render_today_tab(rows, oura_by_date):
-    total, avg_mood_30d, top_topic, streak, today_row = load_stats(rows)
+# ── Daily reflection tab ──────────────────────────────────────────────────────
+# Per spec: this page is just the writing/mood/feelings inputs — no Oura
+# badges, no historical stats grid. Those moved to Weekly Insights / Reflection
+# Trends to keep the daily writing space distraction-free.
+def render_daily_reflection_tab(rows):
+    _, _, _, streak, today_row = load_stats(rows)
     default_content = today_row["content"] if today_row else ""
-    default_mood    = float(today_row["mood"]) if today_row else 6.5
+    # Default to 5.0 (neutral) for a brand-new entry; existing entries keep
+    # their saved value. Matches the "skip = stored as 5" convention so the
+    # default state of the slider lines up with the no-input state.
+    default_mood    = float(today_row["mood"]) if today_row else 5.0
     if today_row and not st.session_state.get("keywords"):
         st.session_state["keywords"] = today_row.get("keywords") or []
 
     today_str  = user_today().strftime("%A · %B") + f" {user_today().day}, {user_today().year}"
-    streak_lbl = f"🔥 {streak}-day streak" if streak > 1 else ("✨ Start your streak!" if streak == 0 else "Day 1 streak!")
+    streak_lbl = f"{streak}-day streak" if streak > 1 else ("Start your streak" if streak == 0 else "Day 1 streak")
 
     col_title, col_streak = st.columns([3, 1])
     with col_title:
@@ -1223,25 +1781,122 @@ def render_today_tab(rows, oura_by_date):
     with col_streak:
         st.markdown(f'<div style="text-align:right;padding-top:4px"><span class="streak-badge">{streak_lbl}</span></div>', unsafe_allow_html=True)
 
-    # ── Oura badges ──
-    oura_today = oura.build_today_view(oura_by_date)
-    oura_ui.render_oura_badges(oura_today)
-
     st.markdown('<div class="section-label">What\'s on your mind?</div>', unsafe_allow_html=True)
     content = st.text_area("reflection", value=default_content,
                            placeholder="Write about your day, what you're feeling, what went well or didn't…",
                            height=140, label_visibility="collapsed")
 
     st.markdown('<div class="section-label">Mood (1–10)</div>', unsafe_allow_html=True)
+
+    # Skip toggle: when checked, no mood is recorded for the day and the DB
+    # stores 5.0 (neutral) so downstream averages/charts still have a value
+    # but it's clearly the "no input" sentinel. Slider is disabled in this
+    # state to make the absence of a choice visually obvious.
+    skip_mood = st.checkbox(
+        "Skip mood today (stored as 5)",
+        value=False,
+        key="skip_mood",
+    )
+
     mood_col, val_col = st.columns([10, 1])
     with mood_col:
-        mood = st.slider("mood", 1.0, 10.0, default_mood, step=0.5, label_visibility="collapsed")
+        # Continuous scale: step=0.1 so the slider feels smooth rather than
+        # snapping to half-points like the old ordinal version.
+        mood_slider_value = st.slider(
+            "mood", 1.0, 10.0, default_mood,
+            step=0.1,
+            label_visibility="collapsed",
+            disabled=skip_mood,
+        )
+    mood = 5.0 if skip_mood else float(mood_slider_value)
     with val_col:
-        st.markdown(f'<div class="mood-value" style="padding-top:18px">{mood}</div>', unsafe_allow_html=True)
+        display_mood = "—" if skip_mood else f"{mood:.1f}"
+        st.markdown(
+            f'<div class="mood-value" style="padding-top:18px">{display_mood}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Feelings ──
+    # Multiselect of common affect words, plus free-text via accept_new_options.
+    # Each selected feeling gets a 1–10 slider with a "skip rating" checkbox —
+    # skip-checked stores intensity=null so we distinguish "felt it but didn't
+    # rate it" from "rated it 5".
+    st.markdown('<div class="section-label">Feelings</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="feeling-hint">Pick any that fit. You can type your own. '
+        'Rate each one 1&ndash;10, or check &ldquo;skip rating&rdquo; to leave it unrated.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Seed defaults from today_row on first render. We write directly into the
+    # widget's session_state key rather than using `default=` so Streamlit doesn't
+    # warn about having both `default` and `key` on the same widget — once a key
+    # is set, the widget reads from it on every rerun.
+    if today_row and "feelings_seeded" not in st.session_state:
+        stored = today_row.get("feelings") or []
+        st.session_state["feelings_selected"] = [
+            f["name"] for f in stored if f.get("name")
+        ]
+        for f in stored:
+            name = f.get("name")
+            intensity = f.get("intensity")
+            if name and intensity is not None:
+                st.session_state[f"intensity_{name}"] = float(intensity)
+        st.session_state["feelings_seeded"] = True
+
+    selected_feelings = st.multiselect(
+        "feelings",
+        options=PRESET_FEELINGS,
+        accept_new_options=True,
+        label_visibility="collapsed",
+        placeholder="Add feelings…",
+        key="feelings_selected",
+    )
+
+    feelings_payload: list[dict] = []
+    if selected_feelings:
+        for name in selected_feelings:
+            skip_key = f"skip_intensity_{name}"
+            slider_key = f"intensity_{name}"
+            if skip_key not in st.session_state:
+                st.session_state[skip_key] = slider_key not in st.session_state
+            if slider_key not in st.session_state:
+                st.session_state[slider_key] = 5.0
+
+            name_col, skip_col, slider_col = st.columns([2, 2, 6])
+            with name_col:
+                st.markdown(
+                    f'<div class="feeling-name">{name}</div>',
+                    unsafe_allow_html=True,
+                )
+            with skip_col:
+                skip_rating = st.checkbox(
+                    "Skip rating",
+                    key=skip_key,
+                )
+            with slider_col:
+                rating = st.slider(
+                    f"rate {name} 1–10",
+                    1.0, 10.0,
+                    step=0.1,
+                    label_visibility="collapsed",
+                    disabled=skip_rating,
+                    key=slider_key,
+                )
+
+            feelings_payload.append({
+                "name": name,
+                "intensity": None if skip_rating else float(rating),
+            })
+    else:
+        st.markdown(
+            '<div class="feeling-skip">No feelings selected.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("""<div class="kw-header">
-      <div class="section-label" style="margin-top:1rem">Detected keywords</div>
-      <div class="kw-ai-label">spaCy · AI-extracted</div>
+      <div class="section-label" style="margin-top:1.4rem">Detected keywords</div>
+      <div class="kw-ai-label">spaCy &middot; AI-extracted</div>
     </div>""", unsafe_allow_html=True)
 
     kws = st.session_state.get("keywords", [])
@@ -1254,15 +1909,7 @@ def render_today_tab(rows, oura_by_date):
         chips += "</div>"
         st.markdown(chips, unsafe_allow_html=True)
     else:
-        st.markdown('<div style="color:#bbb;font-size:0.9rem;margin-top:0.4rem">Keywords will appear after you write your reflection.</div>', unsafe_allow_html=True)
-
-    st.markdown('<hr class="divider">', unsafe_allow_html=True)
-    st.markdown(f"""
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-card-label">Entries</div><div class="stat-card-value">{total}</div><div class="stat-card-sub">total logged</div></div>
-      <div class="stat-card"><div class="stat-card-label">Avg Mood</div><div class="stat-card-value">{avg_mood_30d}</div><div class="stat-card-sub">past 30 days</div></div>
-      <div class="stat-card"><div class="stat-card-label">Top Topic</div><div class="stat-card-value" style="font-size:1.3rem;padding-top:4px">{top_topic}</div><div class="stat-card-sub">this week</div></div>
-    </div>""", unsafe_allow_html=True)
+        st.markdown('<div style="color:#bbb;font-size:0.9rem;margin-top:0.4rem">Keywords will appear after you save your reflection.</div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     _, btn_clear, btn_save = st.columns([4, 1.2, 1.8])
@@ -1270,6 +1917,15 @@ def render_today_tab(rows, oura_by_date):
         if st.button("Clear", use_container_width=True):
             st.session_state["keywords"] = []
             st.session_state["save_success"] = False
+            # Wipe feelings state too — multiselect, the one-time seed marker,
+            # and any per-feeling intensity / skip toggle values keyed by name.
+            for key in list(st.session_state.keys()):
+                if (
+                    key.startswith("intensity_")
+                    or key.startswith("skip_intensity_")
+                    or key in ("feelings_selected", "feelings_seeded")
+                ):
+                    del st.session_state[key]
             st.rerun()
     with btn_save:
         if st.button("Save reflection", type="primary", use_container_width=True):
@@ -1277,7 +1933,8 @@ def render_today_tab(rows, oura_by_date):
                 with st.spinner("Extracting keywords…"):
                     kws = extract_keywords(content)
                 st.session_state["keywords"] = kws
-                save_reflection(content, mood, kws, st.session_state["user_id"])
+                save_reflection(content, mood, kws, st.session_state["user_id"],
+                                feelings=feelings_payload)
                 st.session_state["save_success"] = True
                 st.cache_data.clear()
                 st.rerun()
@@ -1285,7 +1942,7 @@ def render_today_tab(rows, oura_by_date):
                 st.warning("Write something first before saving.")
 
     if st.session_state.get("save_success"):
-        st.markdown('<div class="save-msg">✓ Reflection saved for today.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="save-msg">&check; Reflection saved for today.</div>', unsafe_allow_html=True)
 
 
 
@@ -1303,19 +1960,29 @@ oura.auto_sync_if_stale(
 )
 oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Today", "🗺️ Topic Map", "🌿 Dendrogram", "✨ Insights", "⚙️ Settings"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "Daily Reflection",
+    "Weekly Insights",
+    "Reflection Trends",
+    "Topic Map",
+    "Dendrogram",
+    "Settings",
+])
 
 with tab1:
-    render_today_tab(rows, oura_by_date)
+    render_daily_reflection_tab(rows)
 
 with tab2:
-    render_bertopic_tab(rows)
+    render_weekly_insights_tab(rows, oura_by_date)
 
 with tab3:
-    render_dendrogram_tab(rows)
+    render_reflection_trends_tab(rows, oura_by_date)
 
 with tab4:
-    render_insights_tab(rows, oura_by_date)
+    render_bertopic_tab(rows)
 
 with tab5:
+    render_dendrogram_tab(rows)
+
+with tab6:
     oura_ui.render_settings_tab(supabase, user_id)
