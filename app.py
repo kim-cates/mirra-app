@@ -17,12 +17,33 @@ from intro_page import render_intro_page, user_has_seen_intro
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Mirra", layout="centered")
 
+# Mobile viewport — Streamlit doesn't always inject one, and without this
+# phones render at desktop-width and zoom out, making everything tiny.
+st.markdown(
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, '
+    'maximum-scale=5.0">',
+    unsafe_allow_html=True,
+)
+
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-color: #faf9f5; color: #2a2a2a; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+/* Force the cream background onto Streamlit's actual outermost containers.
+   Targeting just html/body wasn't enough — Streamlit applies its own theme
+   colors to .stApp and related wrappers, and on phones in dark mode those
+   wrappers would override our cream and bleed black through to the user.
+   Setting all of them explicitly + the !important flag wins against the
+   built-in dark theme. The config.toml at .streamlit/config.toml also
+   forces light theme on Streamlit Cloud, this is the belt-and-suspenders. */
+html, body, .stApp, [data-testid="stAppViewContainer"], .main, .block-container {
+    background-color: #faf9f5 !important;
+    color: #2a2a2a !important;
+    font-family: 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding: 1.6rem 2rem 4rem 2rem; max-width: 1180px; }
 
@@ -30,12 +51,16 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-colo
 .stTabs [data-baseweb="tab-list"] {
     gap: 2px; background: transparent; border-bottom: 1px solid #ece9df;
     border-radius: 0; padding: 0 0 0 4px; margin-bottom: 1rem;
+    /* Allow horizontal scrolling on mobile so 6 tabs don't crush together. */
+    overflow-x: auto; flex-wrap: nowrap;
 }
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { height: 0; }
 .stTabs [data-baseweb="tab"] {
     border-radius: 0; padding: 10px 18px; font-size: 0.86rem;
     font-weight: 500; color: #999; background: transparent; border: none;
     border-bottom: 2px solid transparent; margin-bottom: -1px;
     transition: color 0.15s ease, border-color 0.15s ease;
+    white-space: nowrap;  /* don't wrap tab labels onto two lines */
 }
 .stTabs [data-baseweb="tab"]:hover { color: #555; }
 .stTabs [aria-selected="true"] {
@@ -52,6 +77,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-colo
     background: transparent; border: 1px solid #3dab7a; color: #2a8a5e;
     padding: 0.3rem 0.9rem; border-radius: 999px;
     font-size: 0.82rem; font-weight: 500; letter-spacing: 0.01em;
+    white-space: nowrap;
 }
 .section-label {
     font-size: 0.72rem; font-weight: 600; color: #888;
@@ -59,14 +85,14 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; background-colo
     margin-bottom: 0.7rem; margin-top: 1.8rem;
 }
 
-/* Inputs */
-textarea {
+/* Inputs — !important to beat dark-theme defaults */
+textarea, input[type="text"], input[type="password"], .stTextInput input, .stTextArea textarea {
     background-color: #ffffff !important; border: 1px solid #ece9df !important;
     border-radius: 10px !important; font-family: 'DM Sans', sans-serif !important;
     font-size: 0.98rem !important; color: #2a2a2a !important;
     transition: border-color 0.15s ease !important;
 }
-textarea:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61,171,122,0.08) !important; }
+textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61,171,122,0.08) !important; }
 
 .stSlider > div > div > div > div { background-color: #3dab7a !important; }
 [data-testid="stSlider"] [role="slider"] {
@@ -83,7 +109,7 @@ textarea:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61
     background: #e8f5f0; border: 1px solid #c9e4d6; color: #2a7a55;
 }
 .kw-chip-neutral { background: #f5f4ee; border: 1px solid #e5e2d6; color: #666; }
-.kw-header { display: flex; justify-content: space-between; align-items: center; }
+.kw-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; }
 .kw-ai-label { font-size: 0.74rem; color: #aaa; letter-spacing: 0.04em; }
 .divider { border: none; border-top: 1px solid #ece9df; margin: 1.8rem 0; }
 
@@ -114,6 +140,7 @@ textarea:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61
 /* Login page */
 .login-wrap { max-width: 400px; margin: 0 auto; padding-top: 1rem; }
 .login-logo { text-align: center; margin-bottom: 1.4rem; }
+.login-logo img { max-width: 100%; height: auto; }
 .login-title { font-family: 'Lora', serif; font-size: 2rem; font-weight: 600; color: #1a1a1a; text-align: center; margin-bottom: 0.3rem; letter-spacing: -0.01em; }
 .login-sub { color: #999; font-size: 0.74rem; text-align: center; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 1.8rem; font-weight: 500; }
 .logout-btn { position: fixed; top: 14px; right: 18px; z-index: 999; }
@@ -130,6 +157,51 @@ textarea:focus { border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61
 .min-data-msg {
     background: white; border: 1px solid #ece9df; border-left: 3px solid #d4a843;
     border-radius: 8px; padding: 0.9rem 1.2rem; color: #6a5520; font-size: 0.92rem; margin-top: 1rem;
+}
+
+/* ── Mobile breakpoints ────────────────────────────────────────────────────
+   Streamlit's st.columns doesn't auto-stack on mobile, but our custom HTML
+   grids (.stat-grid, the Oura badge row in oura_ui.py, the weekly insights
+   cards) need explicit media queries to wrap. Without these they crush down
+   into unreadable thin columns on phones.
+
+   Two breakpoints:
+   - <=768px (tablet / large phone landscape): 4-col grids drop to 2-col
+   - <=480px (phone portrait): all grids stack to a single column;
+     reduce body padding so content reaches closer to the screen edges
+*/
+@media (max-width: 768px) {
+    .block-container { padding: 1rem 1rem 3rem 1rem; }
+    .stat-grid { grid-template-columns: 1fr 1fr !important; gap: 8px; }
+    .title-text { font-size: 1.5rem; }
+    .insight-card { padding: 1rem 1.1rem; }
+    /* Force any 4-column inline grid (the Oura badge row uses inline style
+       grid-template-columns: repeat(4, 1fr); we can't add a class to it
+       without editing each occurrence, so this universal selector catches
+       any inline-styled 4-col grids and downgrades them to 2-col.) */
+    div[style*="grid-template-columns:repeat(4,1fr)"],
+    div[style*="grid-template-columns: repeat(4,1fr)"],
+    div[style*="grid-template-columns: repeat(4, 1fr)"] {
+        grid-template-columns: 1fr 1fr !important;
+    }
+}
+@media (max-width: 480px) {
+    .block-container { padding: 0.8rem 0.8rem 3rem 0.8rem; }
+    .stat-grid { grid-template-columns: 1fr !important; }
+    .title-text { font-size: 1.35rem; }
+    .stTabs [data-baseweb="tab"] { padding: 8px 12px; font-size: 0.8rem; }
+    /* On phones, even the 2-col fallback for the badge row gets cramped —
+       stack everything single-file. */
+    div[style*="grid-template-columns:repeat(4,1fr)"],
+    div[style*="grid-template-columns: repeat(4,1fr)"],
+    div[style*="grid-template-columns: repeat(4, 1fr)"],
+    div[style*="grid-template-columns:repeat(2,1fr)"],
+    div[style*="grid-template-columns: repeat(2,1fr)"],
+    div[style*="grid-template-columns: repeat(2, 1fr)"] {
+        grid-template-columns: 1fr !important;
+    }
+    .insight-card { padding: 0.9rem 1rem; font-size: 0.92rem; }
+    .section-label { margin-top: 1.4rem; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -180,6 +252,97 @@ def get_embeddings(texts: list[str]) -> np.ndarray:
         return np.zeros((0, 384))
     embedder = load_nlp_models()  # no longer a tuple
     return embedder.encode(texts, show_progress_bar=False)
+
+
+# Biometric fields fed into clustering alongside text. Each contributes
+# `_BIOMETRIC_FEATURE_DIMS` columns to the augmented embedding (the value is
+# tiled so the bundle has comparable weight to ~50 text-embedding dims),
+# and is z-scored across the corpus first so different scales (mood 1-10
+# vs HRV 20-90 vs RHR 45-80, etc.) don't make one feature dominate.
+_BIOMETRIC_FIELDS = ("mood", "sleep_score", "readiness_score", "hrv_avg", "resting_hr")
+_BIOMETRIC_FEATURE_DIMS = 10
+
+
+def build_biometric_features(
+    values_per_field: dict[str, list[float | None]],
+) -> np.ndarray:
+    """Standardise each field across the corpus then tile it.
+
+    Args:
+        values_per_field: maps field name -> list of values aligned with the
+            rows being clustered (one value per row, None where missing).
+
+    Returns:
+        Array of shape (n_rows, len(fields) * _BIOMETRIC_FEATURE_DIMS).
+        Missing values are imputed with the field mean so the feature space
+        stays well-defined. If a field has no data at all, its block is zeros.
+    """
+    n = len(next(iter(values_per_field.values())))
+    blocks = []
+    for field in _BIOMETRIC_FIELDS:
+        vals = values_per_field.get(field) or [None] * n
+        present = [v for v in vals if v is not None]
+        if not present:
+            # No data for this field — contribute a zero block so the column
+            # count stays consistent across runs.
+            blocks.append(np.zeros((n, _BIOMETRIC_FEATURE_DIMS)))
+            continue
+        arr = np.array(present, dtype=float)
+        mean = float(arr.mean())
+        std = float(arr.std()) or 1.0
+        # Impute missing with the mean, then z-score everything.
+        filled = np.array([float(v) if v is not None else mean for v in vals])
+        z = (filled - mean) / std
+        blocks.append(np.tile(z.reshape(-1, 1), (1, _BIOMETRIC_FEATURE_DIMS)))
+    return np.hstack(blocks)
+
+
+def biometric_profile_per_phrase(
+    phrases: list[str],
+    rows: list[dict],
+    oura_by_date: dict[str, dict],
+) -> dict[str, list[float | None]]:
+    """For each phrase, average each biometric across the entries it appears in.
+
+    A phrase doesn't have a single date — it can recur across many days. To
+    cluster phrases by physiological context, we compute the mean of each
+    biometric over the days where the phrase appears in the reflection
+    content (case-insensitive substring match). Phrases that don't appear in
+    any entry (e.g. ones synthesised from a similarity query) get None for
+    every field; those rows will be mean-imputed by build_biometric_features.
+
+    Returns a dict in the same shape build_biometric_features expects.
+    """
+    # Lower-case content lookup for case-insensitive matching.
+    entries = [
+        {
+            "content_lc": (r.get("content") or "").lower(),
+            "date": r.get("entry_date"),
+            "mood": r.get("mood"),
+        }
+        for r in rows
+    ]
+
+    out: dict[str, list[float | None]] = {f: [] for f in _BIOMETRIC_FIELDS}
+    for phrase in phrases:
+        needle = phrase.lower().strip()
+        matching = [e for e in entries if needle and needle in e["content_lc"]]
+
+        # Gather available values per field across matching entries.
+        per_field_vals: dict[str, list[float]] = {f: [] for f in _BIOMETRIC_FIELDS}
+        for e in matching:
+            if e["mood"] is not None:
+                per_field_vals["mood"].append(float(e["mood"]))
+            oura_row = oura_by_date.get(e["date"]) or {}
+            for f in ("sleep_score", "readiness_score", "hrv_avg", "resting_hr"):
+                v = oura_row.get(f)
+                if v is not None:
+                    per_field_vals[f].append(float(v))
+
+        for f in _BIOMETRIC_FIELDS:
+            vs = per_field_vals[f]
+            out[f].append(sum(vs) / len(vs) if vs else None)
+    return out
 
 
 # Preset feelings shown in the multiselect on the daily reflection page.
@@ -241,7 +404,20 @@ def load_stats(rows):
 
 # ── Topic Map: UMAP + HDBSCAN (no BERTopic dependency) ───────────────────────
 @st.cache_data(ttl=300)
-def run_topic_map(texts: tuple, moods: tuple = None):
+def run_topic_map(texts: tuple, biometrics: tuple | None = None):
+    """Cluster reflection texts into topic groups.
+
+    Args:
+        texts: tuple of reflection content strings.
+        biometrics: optional tuple of (field_name, values_tuple) pairs, one
+            tuple per text in the same order. Fields should be from
+            `_BIOMETRIC_FIELDS` (mood, sleep_score, readiness_score, hrv_avg,
+            resting_hr). Tuple-of-tuples form is used (rather than a dict) so
+            the function args stay hashable for st.cache_data. When provided,
+            these are z-scored and concatenated onto the text embeddings
+            before clustering so groups reflect physiological similarity in
+            addition to semantic content.
+    """
     from umap import UMAP
     from hdbscan import HDBSCAN
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -253,17 +429,19 @@ def run_topic_map(texts: tuple, moods: tuple = None):
 
     embeddings = embedder.encode(text_list, show_progress_bar=False)
 
-    # Factor in mood scores if provided
-    if moods and len(moods) == len(text_list):
-        # Normalize mood (1-10 scale) to a standard range for blending
-        mood_array = np.array(moods, dtype=float)
-        mood_normalized = (mood_array - 5.5) / 4.5  # Centers around 0, range -1 to 1
-        
-        # Replicate mood value across 10 dimensions to give it meaningful influence
-        mood_features = np.tile(mood_normalized.reshape(-1, 1), (1, 10))
-        
-        # Concatenate mood features with text embeddings
-        embeddings = np.hstack([embeddings, mood_features])
+    # Augment with standardized biometric features. We keep the same
+    # filtering rule (drop blank texts) above, so the biometric values must
+    # be aligned by index AFTER that filter — callers pass values already
+    # aligned with `texts`, so we slice to match the kept indices.
+    if biometrics:
+        bio_dict = dict(biometrics)
+        kept_indices = [i for i, t in enumerate(texts) if t and t.strip()]
+        aligned = {
+            field: [list(bio_dict.get(field) or [None] * len(texts))[i] for i in kept_indices]
+            for field in _BIOMETRIC_FIELDS
+        }
+        biometric_block = build_biometric_features(aligned)
+        embeddings = np.hstack([embeddings, biometric_block])
 
     n = len(text_list)
     reduced = UMAP(
@@ -324,9 +502,9 @@ TOPIC_COLORS = [
 ]
 
 
-def render_bertopic_tab(rows):
+def render_bertopic_tab(rows, oura_by_date):
     st.markdown('<p class="title-text">Topic Map</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">sentence-transformers + UMAP + HDBSCAN + TF-IDF labels</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">sentence-transformers + UMAP + HDBSCAN + TF-IDF labels &middot; clusters also factor in mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 10
     if len(rows) < MIN_ENTRIES:
@@ -336,6 +514,18 @@ def render_bertopic_tab(rows):
     texts = [r["content"] for r in rows]
     dates = [r["entry_date"] for r in rows]
     moods = [r["mood"] for r in rows]
+
+    # Build per-row biometric values aligned to `texts`. Pull from Oura by
+    # entry_date — missing days come through as None and get mean-imputed
+    # inside build_biometric_features(). Tuple-of-tuples form keeps the arg
+    # hashable for run_topic_map's @st.cache_data decorator.
+    biometrics = (
+        ("mood", tuple(moods)),
+        ("sleep_score",     tuple((oura_by_date.get(d) or {}).get("sleep_score")     for d in dates)),
+        ("readiness_score", tuple((oura_by_date.get(d) or {}).get("readiness_score") for d in dates)),
+        ("hrv_avg",         tuple((oura_by_date.get(d) or {}).get("hrv_avg")         for d in dates)),
+        ("resting_hr",      tuple((oura_by_date.get(d) or {}).get("resting_hr")      for d in dates)),
+    )
 
     if not st.button("▶ Run Topic Model", type="primary", key="run_topic_map"):
         st.markdown('<div style="color:#aaa; font-size:0.92rem; margin-top:0.5rem">Click to cluster your entries with UMAP + HDBSCAN. Takes ~20 sec on first run.</div>', unsafe_allow_html=True)
@@ -347,7 +537,7 @@ def render_bertopic_tab(rows):
         load_nlp_models()
         st.write("Embedding and clustering…")
         try:
-            reduced, topics, topic_labels, text_list = run_topic_map(tuple(texts), tuple(moods))
+            reduced, topics, topic_labels, text_list = run_topic_map(tuple(texts), biometrics)
         except Exception as e:
             st.error(f"Topic map failed: {e}")
             return
@@ -423,8 +613,18 @@ def render_bertopic_tab(rows):
 
 # ── Dendrogram viz ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def run_dendrogram(phrases_tuple: tuple):
-    """Run HAC on a tuple of pre-filtered phrases. Returns (phrases, Z, cluster_ids)."""
+def run_dendrogram(phrases_tuple: tuple, biometrics: tuple | None = None):
+    """Run hierarchical clustering on a tuple of pre-filtered phrases.
+
+    Args:
+        phrases_tuple: tuple of phrase strings.
+        biometrics: optional tuple of (field_name, values_tuple) pairs — one
+            value per phrase, the average of that biometric across days the
+            phrase appears in (see biometric_profile_per_phrase). Tuple-of-
+            tuples form keeps args hashable for st.cache_data.
+
+    Returns: (phrases, Z, cluster_ids) or (None, None, None) on too few phrases.
+    """
     from scipy.cluster.hierarchy import linkage, fcluster
     from scipy.spatial.distance import pdist
     from hdbscan import HDBSCAN
@@ -436,6 +636,16 @@ def run_dendrogram(phrases_tuple: tuple):
     embeddings = get_embeddings(phrases)
     if embeddings.shape[0] == 0:
         return None, None, None
+
+    # Augment phrase embeddings with the phrase's mean biometric profile.
+    # A phrase like "creative projects" appearing on high-HRV/high-mood days
+    # will cluster closer to other phrases from similar physiological contexts
+    # than text alignment alone would suggest.
+    if biometrics:
+        bio_dict = dict(biometrics)
+        aligned = {f: list(bio_dict.get(f) or [None] * len(phrases)) for f in _BIOMETRIC_FIELDS}
+        biometric_block = build_biometric_features(aligned)
+        embeddings = np.hstack([embeddings, biometric_block])
 
     # Use HDBSCAN for semantic clustering instead of fixed-cluster hierarchical
     clusterer = HDBSCAN(
@@ -598,9 +808,9 @@ def get_top_similar_phrases(query: str, phrases: list[str], top_n: int = 25) -> 
     return [p for p, _ in similarities[:top_n]]
 
 
-def render_dendrogram_tab(rows):
+def render_dendrogram_tab(rows, oura_by_date):
     st.markdown('<p class="title-text">Phrase Dendrogram</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem"> noun phrases (3–5 words) · sentence-transformers embeddings · HDBSCAN clustering</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem"> noun phrases (3&ndash;5 words) &middot; sentence-transformers embeddings &middot; HDBSCAN clustering &middot; clusters factor in each phrase\'s avg mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 8
     if len(rows) < MIN_ENTRIES:
@@ -671,9 +881,21 @@ def render_dendrogram_tab(rows):
                 phrases_to_cluster = unique_phrases
 
             st.write("Embedding phrases with sentence-transformers…")
-            st.write("Clustering semantically similar phrases…")
+            st.write("Clustering with text and biometric profile…")
+            # Build per-phrase biometric averages from the reflection corpus.
+            # Phrases that don't appear in any entry (e.g. synthesised by a
+            # similarity query) get None values, which mean-impute inside
+            # build_biometric_features.
+            phrase_bio = biometric_profile_per_phrase(
+                phrases_to_cluster, rows, oura_by_date
+            )
+            biometric_tuple = tuple(
+                (field, tuple(phrase_bio[field])) for field in _BIOMETRIC_FIELDS
+            )
             try:
-                phrases, Z, cluster_ids = run_dendrogram(tuple(phrases_to_cluster))
+                phrases, Z, cluster_ids = run_dendrogram(
+                    tuple(phrases_to_cluster), biometric_tuple
+                )
             except Exception as e:
                 st.error(f"Dendrogram failed: {e}")
                 return
@@ -741,8 +963,17 @@ def render_dendrogram_tab(rows):
         if len(keep) < 2:
             st.info("This cluster has fewer than 2 phrases \u2014 nothing to show.")
             return
+        # Re-cluster the filtered subset. Re-build biometrics over just the
+        # kept phrases so the sub-dendrogram stays consistent with the full
+        # one (same text + biometric augmentation, just a narrower input).
         try:
-            view_phrases, view_Z, view_cluster_ids = run_dendrogram(tuple(keep))
+            sub_bio = biometric_profile_per_phrase(keep, rows, oura_by_date)
+            sub_bio_tuple = tuple(
+                (field, tuple(sub_bio[field])) for field in _BIOMETRIC_FIELDS
+            )
+            view_phrases, view_Z, view_cluster_ids = run_dendrogram(
+                tuple(keep), sub_bio_tuple
+            )
         except Exception as e:
             st.error(f"Cluster filter failed: {e}")
             return
@@ -1979,10 +2210,10 @@ with tab3:
     render_reflection_trends_tab(rows, oura_by_date)
 
 with tab4:
-    render_bertopic_tab(rows)
+    render_bertopic_tab(rows, oura_by_date)
 
 with tab5:
-    render_dendrogram_tab(rows)
+    render_dendrogram_tab(rows, oura_by_date)
 
 with tab6:
     oura_ui.render_settings_tab(supabase, user_id)
