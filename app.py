@@ -345,6 +345,438 @@ def biometric_profile_per_phrase(
     return out
 
 
+def cluster_characteristics_from_phrases(
+    cluster_to_phrases: dict[int, list[str]],
+    rows: list[dict],
+    oura_by_date: dict[str, dict],
+) -> dict[int, dict]:
+    """For each phrase-dendrogram cluster, gather the moods, feelings, and
+    biometrics from every reflection where any of the cluster's phrases
+    appear.
+
+    Phrase clusters are different from entry clusters: one phrase can show
+    up in many reflections, and one reflection can contribute to multiple
+    phrase clusters. We resolve this by collecting the UNION of entries
+    where any cluster phrase appears (case-insensitive substring match),
+    then averaging mood + biometrics over that union and counting feelings
+    across it.
+
+    Returns a dict {cluster_id: {
+        "n_entries": int,            # distinct reflections touched
+        "n_phrases": int,            # phrase count in the cluster
+        "mood_avg":      float|None,
+        "mood_std":      float|None,
+        "sleep_avg":     float|None,
+        "readiness_avg": float|None,
+        "hrv_avg":       float|None,
+        "rhr_avg":       float|None,
+        "top_feelings":  list[(name, count)],   # top 4 by frequency
+        "top_keywords":  list[str],             # from the entries' keyword fields
+    }}.
+    """
+    # Pre-lower entries for case-insensitive matching.
+    entries = [
+        {
+            "content_lc": (r.get("content") or "").lower(),
+            "date": r.get("entry_date"),
+            "mood": r.get("mood"),
+            "feelings": r.get("feelings") or [],
+            "keywords": r.get("keywords") or [],
+        }
+        for r in rows
+    ]
+
+    out: dict[int, dict] = {}
+    for cid, phrases in cluster_to_phrases.items():
+        needles = [p.lower().strip() for p in phrases if p and p.strip()]
+        if not needles:
+            out[int(cid)] = {
+                "n_entries": 0, "n_phrases": len(phrases),
+                "mood_avg": None, "mood_std": None,
+                "sleep_avg": None, "readiness_avg": None,
+                "hrv_avg": None, "rhr_avg": None,
+                "top_feelings": [], "top_keywords": [],
+            }
+            continue
+
+        # Match an entry if ANY of the cluster's phrases appears in it.
+        # We dedupe by date so the same reflection doesn't get double-counted.
+        matched_dates: set[str] = set()
+        matched_entries: list[dict] = []
+        for e in entries:
+            if e["date"] in matched_dates:
+                continue
+            if any(needle in e["content_lc"] for needle in needles):
+                matched_dates.add(e["date"])
+                matched_entries.append(e)
+
+        # Aggregate mood.
+        moods = [float(e["mood"]) for e in matched_entries if e.get("mood") is not None]
+        mood_avg = float(np.mean(moods)) if moods else None
+        mood_std = float(np.std(moods)) if len(moods) > 1 else None
+
+        # Aggregate biometrics from oura_by_date keyed by entry date.
+        bio_lists: dict[str, list[float]] = {
+            "sleep_score": [], "readiness_score": [], "hrv_avg": [], "resting_hr": [],
+        }
+        for e in matched_entries:
+            oura_row = oura_by_date.get(e["date"]) or {}
+            for field in bio_lists:
+                v = oura_row.get(field)
+                if v is not None:
+                    bio_lists[field].append(float(v))
+
+        def _avg(vals: list[float]) -> float | None:
+            return float(np.mean(vals)) if vals else None
+
+        # Aggregate feelings across the matched entries.
+        feeling_counts: dict[str, int] = {}
+        for e in matched_entries:
+            for f in e["feelings"]:
+                name = (f.get("name") or "").lower().strip()
+                if name:
+                    feeling_counts[name] = feeling_counts.get(name, 0) + 1
+        top_feelings = sorted(feeling_counts.items(), key=lambda kv: -kv[1])[:4]
+
+        # Aggregate keyword frequency across the matched entries.
+        kw_counts: dict[str, int] = {}
+        for e in matched_entries:
+            for k in e["keywords"]:
+                kl = (k or "").lower().strip()
+                if kl:
+                    kw_counts[kl] = kw_counts.get(kl, 0) + 1
+        top_keywords = [k for k, _ in sorted(kw_counts.items(), key=lambda kv: -kv[1])[:5]]
+
+        out[int(cid)] = {
+            "n_entries": len(matched_entries),
+            "n_phrases": len(phrases),
+            "mood_avg": mood_avg,
+            "mood_std": mood_std,
+            "sleep_avg":     _avg(bio_lists["sleep_score"]),
+            "readiness_avg": _avg(bio_lists["readiness_score"]),
+            "hrv_avg":       _avg(bio_lists["hrv_avg"]),
+            "rhr_avg":       _avg(bio_lists["resting_hr"]),
+            "top_feelings":  top_feelings,
+            "top_keywords":  top_keywords,
+        }
+    return out
+
+
+def describe_cluster_in_words(profile: dict) -> str:
+    """Turn a cluster profile dict into a short one-sentence description.
+
+    The description weaves mood, dominant feelings, and the most notable
+    biometric signal into prose, so the user gets the gestalt without
+    having to read the metrics row. We deliberately keep it short and
+    descriptive rather than interpretive (no "this means you're stressed"
+    — just "low mood, anxious-leaning, with reduced HRV").
+    """
+    if profile["n_entries"] == 0:
+        return "No matching reflections found for these phrases."
+
+    bits: list[str] = []
+
+    # Mood band
+    mood = profile["mood_avg"]
+    if mood is not None:
+        if mood >= 7.5:
+            bits.append(f"high mood ({mood:.1f}/10)")
+        elif mood >= 5.5:
+            bits.append(f"moderate mood ({mood:.1f}/10)")
+        elif mood >= 3.5:
+            bits.append(f"low-moderate mood ({mood:.1f}/10)")
+        else:
+            bits.append(f"low mood ({mood:.1f}/10)")
+
+    # Dominant feelings — just the names, comma-separated, max 2
+    if profile["top_feelings"]:
+        feels = ", ".join(name for name, _ in profile["top_feelings"][:2])
+        bits.append(f"{feels}-leaning")
+
+    # Biometric tone: pick the most notable signal. We don't have z-scores
+    # vs corpus baseline here so we use rough population thresholds for
+    # Oura's typical adult ranges as a soft signal.
+    biometric_bits = []
+    if profile["sleep_avg"] is not None:
+        if profile["sleep_avg"] >= 80:
+            biometric_bits.append("good sleep")
+        elif profile["sleep_avg"] < 65:
+            biometric_bits.append("poor sleep")
+    if profile["hrv_avg"] is not None:
+        if profile["hrv_avg"] >= 50:
+            biometric_bits.append("strong HRV recovery")
+        elif profile["hrv_avg"] < 30:
+            biometric_bits.append("suppressed HRV")
+    if profile["rhr_avg"] is not None:
+        if profile["rhr_avg"] >= 70:
+            biometric_bits.append("elevated resting HR")
+        elif profile["rhr_avg"] < 55:
+            biometric_bits.append("low resting HR")
+    if biometric_bits:
+        bits.append("with " + " and ".join(biometric_bits[:2]))
+
+    return ", ".join(bits).capitalize() + "."
+
+
+# ── Thematic insights from dendrogram retrieval ──────────────────────────────
+# Given the phrases the dendrogram returned for a query, plus the user's full
+# corpus, surface insight cuts that answer "within this theme, what's
+# different about good days vs bad days?" These take the dendrogram's job
+# from "show me the structure of these phrases" to "tell me what those
+# phrases reveal about my life."
+
+def _entries_matching_phrases(
+    phrases: list[str],
+    rows: list[dict],
+) -> list[dict]:
+    """Return the unique reflections (deduped by date) where ANY of the
+    given phrases appears as a case-insensitive substring of the content.
+    Each returned dict carries its row plus a lowercased content for downstream
+    matching — done once here to avoid repeated .lower() calls in hot loops."""
+    needles = [p.lower().strip() for p in phrases if p and p.strip()]
+    if not needles:
+        return []
+    seen: set = set()
+    out: list[dict] = []
+    for r in rows:
+        d = r.get("entry_date")
+        if d in seen:
+            continue
+        content_lc = (r.get("content") or "").lower()
+        if any(n in content_lc for n in needles):
+            seen.add(d)
+            row_copy = dict(r)
+            row_copy["_content_lc"] = content_lc
+            out.append(row_copy)
+    return out
+
+
+def _discriminating_phrases(
+    high_entries: list[dict],
+    low_entries: list[dict],
+    candidate_phrases: list[str],
+    min_appearances: int = 2,
+) -> list[tuple[str, int, int, float]]:
+    """For each candidate phrase, compute how much more often it appears in
+    `high_entries` vs `low_entries`, normalized by group size so the result
+    isn't biased toward whichever group is bigger.
+
+    Returns a list of (phrase, high_count, low_count, score) sorted by score
+    descending. `score` is the rate difference (high/n_high - low/n_low),
+    bounded in [-1, 1]. We filter phrases appearing fewer than
+    `min_appearances` times total across both groups to drop one-off noise.
+    """
+    if not high_entries and not low_entries:
+        return []
+    n_high = max(1, len(high_entries))
+    n_low = max(1, len(low_entries))
+
+    out: list[tuple[str, int, int, float]] = []
+    for phrase in candidate_phrases:
+        needle = phrase.lower().strip()
+        if not needle:
+            continue
+        hi = sum(1 for e in high_entries if needle in e["_content_lc"])
+        lo = sum(1 for e in low_entries if needle in e["_content_lc"])
+        if hi + lo < min_appearances:
+            continue
+        # Rate difference: how much more concentrated in the high group.
+        # Positive = associated with the high group, negative = low group.
+        score = (hi / n_high) - (lo / n_low)
+        out.append((phrase, hi, lo, score))
+    return sorted(out, key=lambda t: t[3], reverse=True)
+
+
+def _build_corpus_phrase_pool(
+    rows: list[dict],
+    theme_entries: list[dict],
+    seed_phrases: list[str],
+    top_n: int = 80,
+) -> list[str]:
+    """Build the candidate phrase pool for discriminating cuts.
+
+    The dendrogram's 25 phrases are semantically similar to the QUERY ("night
+    shifts and lack of sleep"). They won't include phrases like "yoga class"
+    that might be what *differentiates* good days from bad days in that
+    theme. So we widen the pool: extract 3-word noun phrases from the theme
+    entries (and from the broader corpus, lightly), and merge with the seed.
+
+    `seed_phrases` are the dendrogram's retrieved phrases — always included.
+    """
+    from sklearn.feature_extraction.text import CountVectorizer
+
+    pool: set[str] = {p.lower().strip() for p in seed_phrases if p and p.strip()}
+
+    # Theme-entry phrases: things you tend to write about ON theme days.
+    # These are the most likely to differentiate good vs bad theme days.
+    theme_texts = [e.get("content") or "" for e in theme_entries if e.get("content")]
+    if len(theme_texts) >= 2:
+        try:
+            vec = CountVectorizer(
+                ngram_range=(2, 3),
+                stop_words="english",
+                max_features=top_n,
+                min_df=1,
+                token_pattern=r"[a-zA-Z]{3,}",
+            )
+            vec.fit(theme_texts)
+            for p in vec.get_feature_names_out():
+                pool.add(p.lower().strip())
+        except Exception:
+            pass
+
+    return sorted(pool)
+
+
+def compute_thematic_insights(
+    seed_phrases: list[str],
+    cluster_to_phrases: dict[int, list[str]],
+    rows: list[dict],
+    oura_by_date: dict[str, dict],
+) -> dict:
+    """Compute the four insight cuts for the dendrogram's theme view.
+
+    Args:
+        seed_phrases: the phrases returned by the dendrogram retrieval (these
+            define the theme).
+        cluster_to_phrases: {cluster_id: [phrases]} from the dendrogram.
+        rows: all reflections.
+        oura_by_date: {date_iso: {sleep_score, readiness_score, hrv_avg, resting_hr}}
+
+    Returns a dict with:
+        - theme_entries: list of entries in the theme corpus (for n display)
+        - mood_split: { mood_high, mood_low, n_high, n_low,
+                        top_high_phrases, top_low_phrases }
+        - biometric_splits: { field: { high_phrases, low_phrases, ... } }
+        - cooccurrence: list of (phrase_a, phrase_b, count) top pairs
+        - cluster_mood_ranking: list of (cluster_id, n_entries, mood_avg)
+          sorted high → low
+
+        If theme entries are too few for a cut, that section's payload is
+        marked with skip=True and a brief reason. Skip messages bubble up
+        to the UI so the user knows WHY a cut is missing.
+    """
+    theme_entries = _entries_matching_phrases(seed_phrases, rows)
+
+    out: dict = {
+        "theme_entries": theme_entries,
+        "n_theme": len(theme_entries),
+        "mood_split": None,
+        "biometric_splits": {},
+        "cooccurrence": [],
+        "cluster_mood_ranking": [],
+    }
+
+    # ── 1. Mood split: high-mood vs low-mood theme entries ──────────────────
+    # Need at least 4 entries with mood values to do a meaningful split
+    # (median of 4 still gives 2 per side). Below that the contrast is noise.
+    moods_with_rows = [(e, e["mood"]) for e in theme_entries if e.get("mood") is not None]
+    if len(moods_with_rows) >= 4:
+        mood_median = float(np.median([m for _, m in moods_with_rows]))
+        high = [e for e, m in moods_with_rows if m >= mood_median]
+        low = [e for e, m in moods_with_rows if m < mood_median]
+        # Re-balance: if all entries have the same mood, median sends them
+        # all to one side. Bail in that degenerate case.
+        if high and low:
+            phrase_pool = _build_corpus_phrase_pool(rows, theme_entries, seed_phrases)
+            discr = _discriminating_phrases(high, low, phrase_pool, min_appearances=2)
+            # Top 5 in each direction, with the rate diff floor of 0.10 to
+            # filter out near-tied phrases that aren't really differentiating.
+            top_high = [t for t in discr if t[3] >= 0.10][:5]
+            top_low = [t for t in reversed(discr) if t[3] <= -0.10][:5]
+            out["mood_split"] = {
+                "median": mood_median,
+                "mood_high_avg": float(np.mean([m for _, m in moods_with_rows if m >= mood_median])),
+                "mood_low_avg":  float(np.mean([m for _, m in moods_with_rows if m < mood_median])),
+                "n_high": len(high),
+                "n_low": len(low),
+                "top_high_phrases": top_high,
+                "top_low_phrases": top_low,
+            }
+        else:
+            out["mood_split"] = {"skip": True, "reason": "All theme entries have the same mood — no contrast to surface."}
+    else:
+        out["mood_split"] = {"skip": True, "reason": f"Only {len(moods_with_rows)} theme entries with mood values — need at least 4 for a split."}
+
+    # ── 2. Biometric splits: same logic for each Oura metric ──────────────────
+    bio_fields = [
+        ("sleep_score",     "sleep score",  "higher = better"),
+        ("readiness_score", "readiness",    "higher = better"),
+        ("hrv_avg",         "HRV",          "higher = better recovery"),
+        ("resting_hr",      "resting HR",   "lower = better"),
+    ]
+    phrase_pool_cached: list[str] | None = None  # build once, reuse across fields
+    for field, label, direction in bio_fields:
+        # Pair each theme entry with its biometric value.
+        paired = [
+            (e, (oura_by_date.get(e.get("entry_date")) or {}).get(field))
+            for e in theme_entries
+        ]
+        paired = [(e, v) for e, v in paired if v is not None]
+        if len(paired) < 4:
+            out["biometric_splits"][field] = {
+                "skip": True, "label": label, "direction": direction,
+                "reason": f"Only {len(paired)} theme entries with {label} — need at least 4.",
+            }
+            continue
+        med = float(np.median([v for _, v in paired]))
+        hi_rows = [e for e, v in paired if v >= med]
+        lo_rows = [e for e, v in paired if v < med]
+        if not hi_rows or not lo_rows:
+            out["biometric_splits"][field] = {
+                "skip": True, "label": label, "direction": direction,
+                "reason": f"No variation in {label} across theme entries.",
+            }
+            continue
+        if phrase_pool_cached is None:
+            phrase_pool_cached = _build_corpus_phrase_pool(rows, theme_entries, seed_phrases)
+        discr = _discriminating_phrases(hi_rows, lo_rows, phrase_pool_cached, min_appearances=2)
+        top_hi = [t for t in discr if t[3] >= 0.10][:4]
+        top_lo = [t for t in reversed(discr) if t[3] <= -0.10][:4]
+        out["biometric_splits"][field] = {
+            "skip": False, "label": label, "direction": direction,
+            "median": med,
+            "hi_avg": float(np.mean([v for _, v in paired if v >= med])),
+            "lo_avg": float(np.mean([v for _, v in paired if v < med])),
+            "n_hi": len(hi_rows), "n_lo": len(lo_rows),
+            "top_hi_phrases": top_hi,
+            "top_lo_phrases": top_lo,
+        }
+
+    # ── 3. Co-occurrence: which seed phrases appear together in the same entry ──
+    # We restrict co-occurrence to seed phrases (the dendrogram's retrieval).
+    # Widening to the full pool would surface generic pairs like
+    # ("the work", "and then") that don't add insight.
+    pair_counts: dict[tuple[str, str], int] = {}
+    seeds_lc = [p.lower().strip() for p in seed_phrases if p and p.strip()]
+    for entry in theme_entries:
+        present = [p for p in seeds_lc if p in entry["_content_lc"]]
+        # All unordered pairs of phrases present in this entry.
+        for i in range(len(present)):
+            for j in range(i + 1, len(present)):
+                a, b = sorted([present[i], present[j]])
+                pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
+    out["cooccurrence"] = sorted(
+        [(a, b, c) for (a, b), c in pair_counts.items() if c >= 2],
+        key=lambda t: -t[2],
+    )[:6]
+
+    # ── 4. Cluster-level mood ranking ────────────────────────────────────────
+    # For each dendrogram cluster, average mood across reflections containing
+    # any phrase from that cluster. Surfaces "cluster 2 is your good-mood
+    # theme; cluster 5 is your stressed-out theme" at a glance.
+    cluster_ranking: list[tuple[int, int, float]] = []
+    for cid, phs in cluster_to_phrases.items():
+        cluster_entries = _entries_matching_phrases(phs, rows)
+        cluster_moods = [e["mood"] for e in cluster_entries if e.get("mood") is not None]
+        if not cluster_moods:
+            continue
+        cluster_ranking.append((int(cid), len(cluster_entries), float(np.mean(cluster_moods))))
+    out["cluster_mood_ranking"] = sorted(cluster_ranking, key=lambda t: -t[2])
+
+    return out
+
+
 # Preset feelings shown in the multiselect on the daily reflection page.
 # Users can also type custom feelings (accept_new_options=True) — this is just
 # a starting palette covering common positive/neutral/negative affect words.
@@ -402,9 +834,34 @@ def load_stats(rows):
     return total, avg_mood, top_topic, streak, (today_rows[0] if today_rows else None)
 
 
-# ── Topic Map: UMAP + HDBSCAN (no BERTopic dependency) ───────────────────────
+# ── Topic Map: UMAP + KMeans with silhouette-optimised k ─────────────────────
+def _cluster_cohesion(embeddings: np.ndarray, labels: np.ndarray) -> dict[int, float]:
+    """Per-cluster cohesion = mean cosine similarity of each point to its
+    cluster centroid. Range [-1, 1], higher = tighter cluster."""
+    cohesion: dict[int, float] = {}
+    # Normalize once so dot product == cosine similarity.
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / np.where(norms == 0, 1, norms)
+    for cid in sorted(set(labels.tolist())):
+        idxs = np.where(labels == cid)[0]
+        if len(idxs) == 0:
+            cohesion[int(cid)] = 0.0
+            continue
+        centroid = normed[idxs].mean(axis=0)
+        c_norm = np.linalg.norm(centroid) or 1.0
+        centroid = centroid / c_norm
+        sims = normed[idxs] @ centroid
+        cohesion[int(cid)] = float(sims.mean())
+    return cohesion
+
+
 @st.cache_data(ttl=300)
-def run_topic_map(texts: tuple, biometrics: tuple | None = None):
+def run_topic_map(
+    texts: tuple,
+    biometrics: tuple | None = None,
+    n_clusters: int | None = None,
+    k_search_range: tuple[int, int] = (2, 10),
+):
     """Cluster reflection texts into topic groups.
 
     Args:
@@ -417,9 +874,30 @@ def run_topic_map(texts: tuple, biometrics: tuple | None = None):
             these are z-scored and concatenated onto the text embeddings
             before clustering so groups reflect physiological similarity in
             addition to semantic content.
+        n_clusters: if provided, use KMeans with this exact cluster count.
+            If None, sweep `k_search_range` and pick the k with the highest
+            silhouette score.
+        k_search_range: (min_k, max_k) inclusive, used only when n_clusters
+            is None. max_k is automatically capped at n_samples - 1.
+
+    Returns:
+        reduced: (n, 2) UMAP coords for plotting.
+        labels: list of cluster ids per text (no noise label; every point
+            belongs to a cluster).
+        cluster_labels: {cid: "term1 · term2 · term3"} TF-IDF top terms.
+        text_list: filtered list of non-blank texts (aligned with labels).
+        metrics: dict with keys:
+            - "silhouette": global silhouette score (float, [-1, 1])
+            - "cohesion": global mean intra-cluster cosine cohesion (float)
+            - "per_cluster_cohesion": {cid: float}
+            - "per_cluster_silhouette": {cid: float}
+            - "k_used": int, the cluster count actually used
+            - "k_search_results": list of (k, silhouette) tuples if a sweep
+              was run (else empty list).
     """
     from umap import UMAP
-    from hdbscan import HDBSCAN
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score, silhouette_samples
     from sklearn.feature_extraction.text import TfidfVectorizer
 
     embedder = load_nlp_models()
@@ -449,32 +927,62 @@ def run_topic_map(texts: tuple, biometrics: tuple | None = None):
         min_dist=0.1, random_state=42
     ).fit_transform(embeddings)
 
-    labels = HDBSCAN(
-        min_cluster_size=max(2, n // 10),
-        min_samples=1,
-        cluster_selection_epsilon=0.5
+    # ── Cluster count: either user-fixed, or sweep silhouette to find optimum ──
+    # We cap k at n-1 so silhouette is always defined (it needs >=2 clusters
+    # and >=2 points per cluster on average to be meaningful).
+    max_possible_k = max(2, n - 1)
+    k_search_results: list[tuple[int, float]] = []
+
+    if n_clusters is not None:
+        k_used = int(max(2, min(n_clusters, max_possible_k)))
+    else:
+        lo, hi = k_search_range
+        lo = max(2, int(lo))
+        hi = min(max_possible_k, int(hi))
+        best_k, best_s = lo, -1.0
+        for k_try in range(lo, hi + 1):
+            try:
+                trial_labels = KMeans(
+                    n_clusters=k_try, n_init=10, random_state=42
+                ).fit_predict(embeddings)
+                # silhouette is undefined if a single cluster swallows everything.
+                if len(set(trial_labels)) < 2:
+                    continue
+                s = float(silhouette_score(embeddings, trial_labels, metric="cosine"))
+                k_search_results.append((k_try, s))
+                if s > best_s:
+                    best_s, best_k = s, k_try
+            except Exception:
+                continue
+        k_used = best_k
+
+    # Final fit at chosen k.
+    labels = KMeans(
+        n_clusters=k_used, n_init=10, random_state=42
     ).fit_predict(embeddings)
 
-    # Reassign noise points (-1) to their nearest non-noise cluster
-    noise_mask = labels == -1
-    if noise_mask.any():
-        noise_indices = np.where(noise_mask)[0]
-        non_noise_indices = np.where(labels != -1)[0]
-        
-        if len(non_noise_indices) > 0:
-            # Compute distances from noise points to all non-noise points
-            from scipy.spatial.distance import cdist
-            noise_embeddings = embeddings[noise_indices]
-            non_noise_embeddings = embeddings[non_noise_indices]
-            distances = cdist(noise_embeddings, non_noise_embeddings, metric="cosine")
-            
-            # For each noise point, find the nearest non-noise point and assign to its cluster
-            for i, noise_idx in enumerate(noise_indices):
-                nearest_non_noise_idx = non_noise_indices[np.argmin(distances[i])]
-                labels[noise_idx] = labels[nearest_non_noise_idx]
+    # ── Quality metrics ──
+    # Silhouette score: -1 (bad) to 1 (well-separated).
+    # Cohesion: mean cosine similarity to centroid; 1 = identical, 0 = orthogonal.
+    try:
+        global_sil = float(silhouette_score(embeddings, labels, metric="cosine"))
+        sample_sils = silhouette_samples(embeddings, labels, metric="cosine")
+        per_cluster_sil = {
+            int(cid): float(sample_sils[labels == cid].mean())
+            for cid in sorted(set(labels.tolist()))
+        }
+    except Exception:
+        global_sil = float("nan")
+        per_cluster_sil = {}
+
+    per_cluster_cohesion = _cluster_cohesion(embeddings, labels)
+    global_cohesion = (
+        float(np.mean(list(per_cluster_cohesion.values())))
+        if per_cluster_cohesion else float("nan")
+    )
 
     # Label each cluster with top TF-IDF terms from its texts
-    cluster_ids = sorted(set(labels))
+    cluster_ids = sorted(set(labels.tolist()))
     cluster_labels = {}
     tfidf = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1, 2))
     try:
@@ -482,18 +990,24 @@ def run_topic_map(texts: tuple, biometrics: tuple | None = None):
         terms = tfidf.get_feature_names_out()
         tfidf_matrix = tfidf.transform(text_list).toarray()
         for cid in cluster_ids:
-            if cid == -1:
-                cluster_labels[cid] = "Noise"
-                continue
             idxs = [i for i, l in enumerate(labels) if l == cid]
             mean_vec = tfidf_matrix[idxs].mean(axis=0)
             top_terms = [terms[i] for i in mean_vec.argsort()[::-1][:3]]
-            cluster_labels[cid] = " · ".join(top_terms)
+            cluster_labels[int(cid)] = " · ".join(top_terms)
     except Exception:
         for cid in cluster_ids:
-            cluster_labels[cid] = "Noise" if cid == -1 else f"Cluster {cid}"
+            cluster_labels[int(cid)] = f"Cluster {cid}"
 
-    return reduced, labels.tolist(), cluster_labels, text_list
+    metrics = {
+        "silhouette": global_sil,
+        "cohesion": global_cohesion,
+        "per_cluster_cohesion": per_cluster_cohesion,
+        "per_cluster_silhouette": per_cluster_sil,
+        "k_used": k_used,
+        "k_search_results": k_search_results,
+    }
+
+    return reduced, [int(l) for l in labels.tolist()], cluster_labels, text_list, metrics
 
 
 TOPIC_COLORS = [
@@ -502,9 +1016,41 @@ TOPIC_COLORS = [
 ]
 
 
+def _avg_or_none(values):
+    """Mean of a list of numerics treating None as missing; returns None if all missing."""
+    nums = [float(v) for v in values if v is not None]
+    return float(np.mean(nums)) if nums else None
+
+
+def _fmt_metric(v, suffix="", digits=1):
+    return "—" if v is None else f"{v:.{digits}f}{suffix}"
+
+
+def _cluster_top_keywords(texts_in_cluster, all_texts, top_n=5):
+    """TF-IDF top distinctive keywords for a cluster vs the rest of the corpus."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    if not texts_in_cluster:
+        return []
+    try:
+        vec = TfidfVectorizer(
+            ngram_range=(1, 2), stop_words="english",
+            max_features=300, token_pattern=r"[a-zA-Z]{3,}", min_df=1,
+        )
+        vec.fit(all_texts)
+        terms = vec.get_feature_names_out()
+        cluster_vec = vec.transform(texts_in_cluster).toarray().mean(axis=0)
+        corpus_vec = vec.transform(all_texts).toarray().mean(axis=0)
+        # Distinctiveness: weight up terms more frequent in cluster than corpus.
+        distinctiveness = cluster_vec - 0.6 * corpus_vec
+        top_idx = distinctiveness.argsort()[::-1][:top_n]
+        return [terms[i] for i in top_idx if distinctiveness[i] > 0]
+    except Exception:
+        return []
+
+
 def render_bertopic_tab(rows, oura_by_date):
     st.markdown('<p class="title-text">Topic Map</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">sentence-transformers + UMAP + HDBSCAN + TF-IDF labels &middot; clusters also factor in mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">sentence-transformers + UMAP + KMeans + TF-IDF labels &middot; clusters also factor in mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 10
     if len(rows) < MIN_ENTRIES:
@@ -514,6 +1060,7 @@ def render_bertopic_tab(rows, oura_by_date):
     texts = [r["content"] for r in rows]
     dates = [r["entry_date"] for r in rows]
     moods = [r["mood"] for r in rows]
+    n_texts = sum(1 for t in texts if t and t.strip())
 
     # Build per-row biometric values aligned to `texts`. Pull from Oura by
     # entry_date — missing days come through as None and get mean-imputed
@@ -527,8 +1074,39 @@ def render_bertopic_tab(rows, oura_by_date):
         ("resting_hr",      tuple((oura_by_date.get(d) or {}).get("resting_hr")      for d in dates)),
     )
 
+    # ── Cluster-count controls ──
+    # Auto: sweep k in [2, min(10, n-1)] and pick the one with the highest
+    # silhouette score. Manual: user picks k directly. The manual upper bound
+    # caps at n-1 so silhouette is always defined.
+    st.markdown('<div class="section-label" style="margin-top:0">Cluster settings</div>', unsafe_allow_html=True)
+    ctrl_col1, ctrl_col2 = st.columns([1, 2])
+    with ctrl_col1:
+        mode = st.radio(
+            "Cluster count",
+            options=["Auto-optimize", "Choose manually"],
+            index=0,
+            key="topic_cluster_mode",
+            label_visibility="visible",
+        )
+    with ctrl_col2:
+        max_k = max(2, min(12, n_texts - 1))
+        if mode == "Choose manually":
+            chosen_k = st.slider(
+                "Number of clusters (k)",
+                min_value=2, max_value=max_k, value=min(5, max_k), step=1,
+                key="topic_manual_k",
+            )
+        else:
+            chosen_k = None
+            st.markdown(
+                f'<div style="color:#888; font-size:0.86rem; padding-top:0.4rem">'
+                f'Sweeping k = 2…{min(10, max_k)} and picking the k with the best silhouette score.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
     if not st.button("▶ Run Topic Model", type="primary", key="run_topic_map"):
-        st.markdown('<div style="color:#aaa; font-size:0.92rem; margin-top:0.5rem">Click to cluster your entries with UMAP + HDBSCAN. Takes ~20 sec on first run.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="color:#aaa; font-size:0.92rem; margin-top:0.5rem">Click to cluster your entries. Takes ~20 sec on first run.</div>', unsafe_allow_html=True)
         return
 
     status = st.status("Building topic map…", expanded=True)
@@ -537,7 +1115,11 @@ def render_bertopic_tab(rows, oura_by_date):
         load_nlp_models()
         st.write("Embedding and clustering…")
         try:
-            reduced, topics, topic_labels, text_list = run_topic_map(tuple(texts), biometrics)
+            reduced, topics, topic_labels, text_list, metrics = run_topic_map(
+                tuple(texts), biometrics,
+                n_clusters=chosen_k,
+                k_search_range=(2, min(10, max_k)),
+            )
         except Exception as e:
             st.error(f"Topic map failed: {e}")
             return
@@ -550,12 +1132,89 @@ def render_bertopic_tab(rows, oura_by_date):
     aligned_moods = [content_to_meta.get(t, ("?", 0))[1] for t in text_list]
 
     unique_topics = sorted(set(topics))
-    color_map = {}
-    ci = 0
-    for t in unique_topics:
-        color_map[t] = "#cccccc" if t == -1 else TOPIC_COLORS[ci % len(TOPIC_COLORS)]
-        if t != -1: ci += 1
+    color_map = {t: TOPIC_COLORS[i % len(TOPIC_COLORS)] for i, t in enumerate(unique_topics)}
 
+    # ── Global quality metrics card ──
+    # Silhouette: -1 to 1 (separation between clusters). >0.5 strong, 0.25-0.5
+    # reasonable, <0.25 weak. Cohesion: 0 to 1 (intra-cluster cosine similarity
+    # to centroid). >0.5 tight, <0.3 loose. We label qualitatively so users
+    # don't have to remember the scale.
+    sil = metrics["silhouette"]
+    coh = metrics["cohesion"]
+    k_used = metrics["k_used"]
+
+    def _qual(score, thresholds):
+        if score is None or (isinstance(score, float) and np.isnan(score)):
+            return "n/a", "#999"
+        for label, lo, color in thresholds:
+            if score >= lo:
+                return label, color
+        return "weak", "#c0392b"
+
+    sil_label, sil_color = _qual(sil, [
+        ("strong", 0.5, "#2a8a5e"),
+        ("reasonable", 0.25, "#d4850a"),
+        ("weak", -1.0, "#c0392b"),
+    ])
+    coh_label, coh_color = _qual(coh, [
+        ("tight", 0.5, "#2a8a5e"),
+        ("moderate", 0.3, "#d4850a"),
+        ("loose", -1.0, "#c0392b"),
+    ])
+
+    st.markdown('<div class="section-label" style="margin-top:1.6rem">Cluster quality</div>', unsafe_allow_html=True)
+    # NOTE: HTML must be written WITHOUT leading whitespace per line.
+    # Streamlit pipes st.markdown() output through a markdown parser before
+    # rendering, and markdown treats 4+ spaces of indentation as a code block,
+    # which causes our HTML to render as literal text. We build the string
+    # without indentation to avoid that trap.
+    k_source = "auto-selected" if chosen_k is None else "user-selected"
+    metrics_html = (
+        '<div class="stat-grid">'
+        '<div class="stat-card">'
+        '<div class="stat-card-label">Clusters (k)</div>'
+        f'<div class="stat-card-value">{k_used}</div>'
+        f'<div class="stat-card-sub">{k_source}</div>'
+        '</div>'
+        '<div class="stat-card">'
+        '<div class="stat-card-label">Silhouette</div>'
+        f'<div class="stat-card-value">{_fmt_metric(sil, digits=2)}</div>'
+        f'<div class="stat-card-sub" style="color:{sil_color}">{sil_label} separation</div>'
+        '</div>'
+        '<div class="stat-card">'
+        '<div class="stat-card-label">Cohesion</div>'
+        f'<div class="stat-card-value">{_fmt_metric(coh, digits=2)}</div>'
+        f'<div class="stat-card-sub" style="color:{coh_color}">{coh_label} grouping</div>'
+        '</div>'
+        '</div>'
+    )
+    st.markdown(metrics_html, unsafe_allow_html=True)
+
+    # If we ran a sweep, show the silhouette curve so the user can see why this k won.
+    if metrics["k_search_results"]:
+        sweep = metrics["k_search_results"]
+        sweep_fig = go.Figure()
+        ks = [k for k, _ in sweep]
+        ss = [s for _, s in sweep]
+        bar_colors = ["#3dab7a" if k == k_used else "#c9d4cb" for k in ks]
+        sweep_fig.add_trace(go.Bar(
+            x=ks, y=ss, marker=dict(color=bar_colors),
+            text=[f"{s:.2f}" for s in ss], textposition="outside",
+            hovertemplate="k=%{x}<br>silhouette=%{y:.3f}<extra></extra>",
+        ))
+        sweep_fig.update_layout(
+            paper_bgcolor="#f7f6f2", plot_bgcolor="#f7f6f2",
+            margin=dict(l=20, r=20, t=10, b=30), height=200,
+            xaxis=dict(title="k (clusters)", color="#888", dtick=1),
+            yaxis=dict(title="silhouette", color="#888", showgrid=True, gridcolor="#ece9df"),
+            font=dict(family="DM Sans"),
+            showlegend=False,
+        )
+        with st.expander(f"Silhouette sweep — k={k_used} picked"):
+            st.plotly_chart(sweep_fig, use_container_width=True)
+
+    # ── Main scatter plot ──
+    st.markdown('<div class="section-label" style="margin-top:1.6rem">Topic map</div>', unsafe_allow_html=True)
     fig = go.Figure()
     for tid in unique_topics:
         mask = [i for i, t in enumerate(topics) if t == tid]
@@ -565,7 +1224,7 @@ def render_bertopic_tab(rows, oura_by_date):
             x=[reduced[i, 0] for i in mask],
             y=[reduced[i, 1] for i in mask],
             mode="markers",
-            name=("Noise" if tid == -1 else f"Cluster {tid} — {label}"),
+            name=f"Cluster {tid} — {label}",
             marker=dict(size=10, color=color_map[tid], opacity=0.85,
                         line=dict(width=1, color="white")),
             text=hover, hoverinfo="text",
@@ -582,38 +1241,137 @@ def render_bertopic_tab(rows, oura_by_date):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Build and display legend with topic keywords
+    # ── Per-cluster characteristic summary ──
+    # For each cluster, surface: mood + biometric averages, top distinctive
+    # TF-IDF keywords, top feelings (from per-row feelings payload), and
+    # per-cluster cohesion/silhouette. This is the "what does this cluster
+    # actually feel like?" view.
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">Topics discovered</div>', unsafe_allow_html=True)
-    
-    legend_html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 0.8rem;">'
-    for tid in [t for t in unique_topics if t != -1]:
-        color = color_map[tid]
-        label = topic_labels.get(tid, "")
-        count = sum(1 for t in topics if t == tid)
+    st.markdown('<div class="section-label" style="margin-top:0">Cluster characteristics</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#888; font-size:0.88rem; margin-bottom:0.8rem">'
+        'What each cluster looks like physiologically and thematically.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Pre-index rows by content for biometric + feelings lookup.
+    content_to_row = {r["content"]: r for r in rows}
+
+    for tid in unique_topics:
         idxs = [i for i, t in enumerate(topics) if t == tid]
-        avg_m = round(float(np.mean([aligned_moods[i] for i in idxs])), 1)
-        
-        legend_html += f"""
-        <div style="display:flex; align-items:flex-start; gap:12px; padding:12px 14px; background:#f0efe8; border-radius:12px; border-left:4px solid {color};">
-            <div style="width:10px;height:10px;border-radius:50%;background:{color};flex-shrink:0;margin-top:3px"></div>
-            <div style="flex:1">
-                <div style="font-weight:600; color:#1a1a1a; margin-bottom:4px">Cluster {tid}</div>
-                <div style="font-size:0.88rem; color:#555; line-height:1.4; margin-bottom:6px">{label}</div>
-                <div style="font-size:0.78rem; color:#888">
-                    <span style="margin-right:14px">{count} entries</span>
-                    <span>avg mood {avg_m}</span>
-                </div>
-            </div>
-        </div>"""
-    
-    legend_html += '</div>'
-    st.markdown(legend_html, unsafe_allow_html=True)
+        if not idxs:
+            continue
+        color = color_map[tid]
+        label = topic_labels.get(tid, f"Cluster {tid}")
+        count = len(idxs)
+
+        # Mood: pull from aligned moods (already per-row).
+        cluster_moods = [aligned_moods[i] for i in idxs if aligned_moods[i] is not None]
+        avg_mood = float(np.mean(cluster_moods)) if cluster_moods else None
+        mood_std = float(np.std(cluster_moods)) if len(cluster_moods) > 1 else None
+
+        # Biometrics: pull from oura_by_date keyed on each entry's date.
+        cluster_sleep, cluster_readiness, cluster_hrv, cluster_rhr = [], [], [], []
+        for i in idxs:
+            d = aligned_dates[i]
+            oura_row = oura_by_date.get(d) or {}
+            cluster_sleep.append(oura_row.get("sleep_score"))
+            cluster_readiness.append(oura_row.get("readiness_score"))
+            cluster_hrv.append(oura_row.get("hrv_avg"))
+            cluster_rhr.append(oura_row.get("resting_hr"))
+
+        avg_sleep = _avg_or_none(cluster_sleep)
+        avg_readiness = _avg_or_none(cluster_readiness)
+        avg_hrv = _avg_or_none(cluster_hrv)
+        avg_rhr = _avg_or_none(cluster_rhr)
+
+        # Top distinctive keywords for this cluster vs the rest of the corpus.
+        cluster_texts = [text_list[i] for i in idxs]
+        kws = _cluster_top_keywords(cluster_texts, text_list, top_n=5)
+
+        # Top feelings appearing in this cluster's entries (from the feelings
+        # payload stored per reflection). Count occurrences, then take top 4.
+        feeling_counter: dict[str, int] = {}
+        for i in idxs:
+            row = content_to_row.get(text_list[i]) or {}
+            for f in (row.get("feelings") or []):
+                name = (f.get("name") or "").strip()
+                if name:
+                    feeling_counter[name] = feeling_counter.get(name, 0) + 1
+        top_feelings = sorted(feeling_counter.items(), key=lambda x: -x[1])[:4]
+
+        # Per-cluster quality metrics
+        c_sil = metrics["per_cluster_silhouette"].get(tid)
+        c_coh = metrics["per_cluster_cohesion"].get(tid)
+
+        # Build chips for keywords + feelings
+        kw_chips = "".join(
+            f'<span class="kw-chip">{k}</span>' for k in kws
+        ) if kws else '<span style="color:#aaa; font-size:0.86rem">no distinctive terms</span>'
+        feel_chips = "".join(
+            f'<span class="kw-chip kw-chip-neutral">{name} &middot; {cnt}</span>'
+            for name, cnt in top_feelings
+        ) if top_feelings else '<span style="color:#aaa; font-size:0.86rem">no feelings logged in this cluster</span>'
+
+        # Card. We use the existing .insight-card / .stat-card classes so it
+        # matches the rest of the app's visual language. Built as concatenated
+        # strings (no leading whitespace per line) because Streamlit's markdown
+        # parser treats 4+ spaces of indentation as a code block.
+        mood_sub = ("±" + f"{mood_std:.1f}") if mood_std is not None else "single entry"
+        card_html = (
+            f'<div class="insight-card" style="border-left:4px solid {color}; padding:1.2rem 1.4rem">'
+            f'<div style="display:flex; align-items:center; gap:10px; margin-bottom:0.4rem">'
+            f'<div style="width:12px;height:12px;border-radius:50%;background:{color}"></div>'
+            f'<div class="insight-header" style="margin:0">Cluster {tid} &mdash; {label}</div>'
+            f'</div>'
+            f'<div style="color:#888; font-size:0.84rem; margin-bottom:1rem">'
+            f'{count} entries &middot; cohesion {_fmt_metric(c_coh, digits=2)} &middot; silhouette {_fmt_metric(c_sil, digits=2)}'
+            f'</div>'
+            f'<div class="stat-grid" style="grid-template-columns: repeat(5, 1fr); gap:8px; margin-bottom:1rem">'
+            f'<div class="stat-card" style="padding:0.75rem 0.9rem">'
+            f'<div class="stat-card-label">Mood</div>'
+            f'<div class="stat-card-value" style="font-size:1.4rem">{_fmt_metric(avg_mood)}</div>'
+            f'<div class="stat-card-sub">{mood_sub}</div>'
+            f'</div>'
+            f'<div class="stat-card" style="padding:0.75rem 0.9rem">'
+            f'<div class="stat-card-label">Sleep</div>'
+            f'<div class="stat-card-value" style="font-size:1.4rem">{_fmt_metric(avg_sleep, digits=0)}</div>'
+            f'<div class="stat-card-sub">score</div>'
+            f'</div>'
+            f'<div class="stat-card" style="padding:0.75rem 0.9rem">'
+            f'<div class="stat-card-label">Readiness</div>'
+            f'<div class="stat-card-value" style="font-size:1.4rem">{_fmt_metric(avg_readiness, digits=0)}</div>'
+            f'<div class="stat-card-sub">score</div>'
+            f'</div>'
+            f'<div class="stat-card" style="padding:0.75rem 0.9rem">'
+            f'<div class="stat-card-label">HRV</div>'
+            f'<div class="stat-card-value" style="font-size:1.4rem">{_fmt_metric(avg_hrv, digits=0)}</div>'
+            f'<div class="stat-card-sub">ms avg</div>'
+            f'</div>'
+            f'<div class="stat-card" style="padding:0.75rem 0.9rem">'
+            f'<div class="stat-card-label">Resting HR</div>'
+            f'<div class="stat-card-value" style="font-size:1.4rem">{_fmt_metric(avg_rhr, digits=0)}</div>'
+            f'<div class="stat-card-sub">bpm</div>'
+            f'</div>'
+            f'</div>'
+            f'<div style="font-size:0.74rem; font-weight:600; color:#888; letter-spacing:0.12em; text-transform:uppercase; margin-bottom:0.4rem">Key reflection terms</div>'
+            f'<div class="keywords-row" style="margin-bottom:0.9rem">{kw_chips}</div>'
+            f'<div style="font-size:0.74rem; font-weight:600; color:#888; letter-spacing:0.12em; text-transform:uppercase; margin-bottom:0.4rem">Top feelings</div>'
+            f'<div class="keywords-row">{feel_chips}</div>'
+            f'</div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
 
 
 # ── Dendrogram viz ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def run_dendrogram(phrases_tuple: tuple, biometrics: tuple | None = None):
+def run_dendrogram(
+    phrases_tuple: tuple,
+    biometrics: tuple | None = None,
+    n_clusters: int | None = None,
+    k_search_range: tuple[int, int] = (2, 8),
+):
     """Run hierarchical clustering on a tuple of pre-filtered phrases.
 
     Args:
@@ -622,20 +1380,32 @@ def run_dendrogram(phrases_tuple: tuple, biometrics: tuple | None = None):
             value per phrase, the average of that biometric across days the
             phrase appears in (see biometric_profile_per_phrase). Tuple-of-
             tuples form keeps args hashable for st.cache_data.
+        n_clusters: if provided, cut the dendrogram tree at the level that
+            produces exactly this many flat clusters. If None, sweep
+            `k_search_range` and pick the k with the best silhouette score.
+        k_search_range: (min_k, max_k) inclusive, used only when n_clusters
+            is None. Capped at n_phrases - 1 so silhouette stays defined.
 
-    Returns: (phrases, Z, cluster_ids) or (None, None, None) on too few phrases.
+    Returns:
+        phrases, Z, cluster_ids, metrics
+        - cluster_ids: 1-indexed (scipy convention from fcluster).
+        - metrics: dict with silhouette, cohesion (mean intra-cluster cosine
+          similarity to centroid), per-cluster versions, k_used, and the
+          k-search sweep results if one was run.
+
+        Returns (None, None, None, None) on too few phrases.
     """
     from scipy.cluster.hierarchy import linkage, fcluster
     from scipy.spatial.distance import pdist
-    from hdbscan import HDBSCAN
+    from sklearn.metrics import silhouette_score, silhouette_samples
 
     phrases = list(phrases_tuple)
     if len(phrases) < 4:
-        return None, None, None
+        return None, None, None, None
 
     embeddings = get_embeddings(phrases)
     if embeddings.shape[0] == 0:
-        return None, None, None
+        return None, None, None, None
 
     # Augment phrase embeddings with the phrase's mean biometric profile.
     # A phrase like "creative projects" appearing on high-HRV/high-mood days
@@ -647,21 +1417,80 @@ def run_dendrogram(phrases_tuple: tuple, biometrics: tuple | None = None):
         biometric_block = build_biometric_features(aligned)
         embeddings = np.hstack([embeddings, biometric_block])
 
-    # Use HDBSCAN for semantic clustering instead of fixed-cluster hierarchical
-    clusterer = HDBSCAN(
-        min_cluster_size=max(2, len(phrases) // 8),
-        min_samples=1,
-        cluster_selection_epsilon=0.3
-    )
-    cluster_ids = clusterer.fit_predict(embeddings)
-    
-    # For dendrogram visualization, still compute linkage on normalized embeddings
+    # Compute linkage once. The dendrogram tree itself is the same regardless
+    # of where we cut it for flat clusters — only the flat cluster assignment
+    # changes when k changes.
     norms  = np.linalg.norm(embeddings, axis=1, keepdims=True)
     normed = embeddings / np.where(norms == 0, 1, norms)
     dist   = pdist(normed, metric="cosine")
     Z      = linkage(dist, method="ward")
-    
-    return phrases, Z, cluster_ids
+
+    n = len(phrases)
+    max_possible_k = max(2, n - 1)
+    k_search_results: list[tuple[int, float]] = []
+
+    if n_clusters is not None:
+        k_used = int(max(2, min(n_clusters, max_possible_k)))
+    else:
+        lo, hi = k_search_range
+        lo = max(2, int(lo))
+        hi = min(max_possible_k, int(hi))
+        best_k, best_s = lo, -1.0
+        for k_try in range(lo, hi + 1):
+            try:
+                trial_labels = fcluster(Z, t=k_try, criterion="maxclust")
+                if len(set(trial_labels.tolist())) < 2:
+                    continue
+                s = float(silhouette_score(embeddings, trial_labels, metric="cosine"))
+                k_search_results.append((k_try, s))
+                if s > best_s:
+                    best_s, best_k = s, k_try
+            except Exception:
+                continue
+        k_used = best_k
+
+    # Cut the tree at k_used. fcluster returns 1-indexed labels — that's
+    # scipy's convention and the rest of the dendrogram code already expects it.
+    cluster_ids = fcluster(Z, t=k_used, criterion="maxclust")
+
+    # ── Quality metrics ──
+    try:
+        global_sil = float(silhouette_score(embeddings, cluster_ids, metric="cosine"))
+        sample_sils = silhouette_samples(embeddings, cluster_ids, metric="cosine")
+        per_cluster_sil = {
+            int(cid): float(sample_sils[cluster_ids == cid].mean())
+            for cid in sorted(set(cluster_ids.tolist()))
+        }
+    except Exception:
+        global_sil = float("nan")
+        per_cluster_sil = {}
+
+    per_cluster_cohesion: dict[int, float] = {}
+    for cid in sorted(set(cluster_ids.tolist())):
+        idxs = np.where(cluster_ids == cid)[0]
+        if len(idxs) == 0:
+            per_cluster_cohesion[int(cid)] = 0.0
+            continue
+        centroid = normed[idxs].mean(axis=0)
+        c_norm = np.linalg.norm(centroid) or 1.0
+        centroid = centroid / c_norm
+        sims = normed[idxs] @ centroid
+        per_cluster_cohesion[int(cid)] = float(sims.mean())
+    global_cohesion = (
+        float(np.mean(list(per_cluster_cohesion.values())))
+        if per_cluster_cohesion else float("nan")
+    )
+
+    metrics = {
+        "silhouette": global_sil,
+        "cohesion": global_cohesion,
+        "per_cluster_silhouette": per_cluster_sil,
+        "per_cluster_cohesion": per_cluster_cohesion,
+        "k_used": int(k_used),
+        "k_search_results": k_search_results,
+    }
+
+    return phrases, Z, cluster_ids, metrics
 
 
 def _draw_dendrogram(phrases, Z, cluster_ids):
@@ -810,7 +1639,7 @@ def get_top_similar_phrases(query: str, phrases: list[str], top_n: int = 25) -> 
 
 def render_dendrogram_tab(rows, oura_by_date):
     st.markdown('<p class="title-text">Phrase Dendrogram</p>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem"> noun phrases (3&ndash;5 words) &middot; sentence-transformers embeddings &middot; HDBSCAN clustering &middot; clusters factor in each phrase\'s avg mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
+    st.markdown('<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem"> noun phrases (3&ndash;5 words) &middot; sentence-transformers embeddings &middot; hierarchical clustering with silhouette-optimised cut &middot; clusters factor in each phrase\'s avg mood &amp; Oura biometrics</div>', unsafe_allow_html=True)
 
     MIN_ENTRIES = 8
     if len(rows) < MIN_ENTRIES:
@@ -858,6 +1687,45 @@ def render_dendrogram_tab(rows, oura_by_date):
         mode_label = f'{len(unique_phrases)} unique key phrases found — showing all'
     st.markdown(f'<div style="color:#aaa; font-size:0.85rem; margin:0.3rem 0 0.8rem">{mode_label}</div>', unsafe_allow_html=True)
 
+    # ── Cluster-count controls ────────────────────────────────────────────────
+    # Auto: sweep k=2..8 over the dendrogram's fcluster cuts and pick the k
+    # with the highest silhouette score. Manual: user picks where to cut the
+    # tree directly. The dendrogram visualization is the same either way —
+    # only the flat-cluster colouring/grouping changes with k.
+    st.markdown('<div class="section-label" style="margin-top:0">Cluster settings</div>', unsafe_allow_html=True)
+    ctrl_col1, ctrl_col2 = st.columns([1, 2])
+    with ctrl_col1:
+        dendro_mode = st.radio(
+            "Cluster count",
+            options=["Auto-optimize", "Choose manually"],
+            index=0,
+            key="dendro_cluster_mode",
+            label_visibility="visible",
+        )
+    # Phrase-count for slider upper bound depends on whether a query is active.
+    # If query active, the phrase set is capped at 25; otherwise it's all
+    # unique_phrases. We use a safe ceiling of 10 since beyond ~8 the
+    # dendrogram becomes hard to interpret visually.
+    candidate_n = 25 if query.strip() else len(unique_phrases)
+    max_k_dendro = max(2, min(10, candidate_n - 1))
+    with ctrl_col2:
+        if dendro_mode == "Choose manually":
+            chosen_k_dendro = st.slider(
+                "Number of clusters (k)",
+                min_value=2, max_value=max_k_dendro,
+                value=min(4, max_k_dendro), step=1,
+                key="dendro_manual_k",
+            )
+        else:
+            chosen_k_dendro = None
+            st.markdown(
+                f'<div style="color:#888; font-size:0.86rem; padding-top:0.4rem">'
+                f'Sweeping k = 2…{min(8, max_k_dendro)} and picking the k with '
+                f'the best silhouette score.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
     # ── Run button — stores results in session_state so selectbox reruns don't wipe them ──
     run_clicked = st.button("Run Dendrogram", type="primary", key="run_dendro")
 
@@ -893,8 +1761,10 @@ def render_dendrogram_tab(rows, oura_by_date):
                 (field, tuple(phrase_bio[field])) for field in _BIOMETRIC_FIELDS
             )
             try:
-                phrases, Z, cluster_ids = run_dendrogram(
-                    tuple(phrases_to_cluster), biometric_tuple
+                phrases, Z, cluster_ids, metrics = run_dendrogram(
+                    tuple(phrases_to_cluster), biometric_tuple,
+                    n_clusters=chosen_k_dendro,
+                    k_search_range=(2, min(8, max_k_dendro)),
                 )
             except Exception as e:
                 st.error(f"Dendrogram failed: {e}")
@@ -917,6 +1787,8 @@ def render_dendrogram_tab(rows, oura_by_date):
             "cluster_ids": cluster_ids,
             "cluster_to_phrases": cluster_to_phrases,
             "cluster_names": cluster_names,
+            "metrics": metrics,
+            "chosen_k": chosen_k_dendro,
             "query": query.strip(),
         }
 
@@ -931,6 +1803,8 @@ def render_dendrogram_tab(rows, oura_by_date):
     cluster_ids      = res["cluster_ids"]
     cluster_to_phrases = res["cluster_to_phrases"]
     cluster_names    = res["cluster_names"]
+    metrics          = res.get("metrics") or {}
+    chosen_k_stored  = res.get("chosen_k")
     active_query     = res.get("query", "")
     sorted_clusters  = sorted(cluster_to_phrases.keys())
 
@@ -943,6 +1817,86 @@ def render_dendrogram_tab(rows, oura_by_date):
             f'</div>',
             unsafe_allow_html=True,
         )
+
+    # ── Global cluster quality metrics ────────────────────────────────────────
+    # Same scoring scheme as the Topic Map tab: silhouette + cohesion with
+    # qualitative labels. These describe the FULL clustering (the result of
+    # the Run button), not whatever is currently filtered in the view below.
+    if metrics:
+        sil = metrics.get("silhouette")
+        coh = metrics.get("cohesion")
+        k_used = metrics.get("k_used")
+
+        def _qual_d(score, thresholds):
+            if score is None or (isinstance(score, float) and np.isnan(score)):
+                return "n/a", "#999"
+            for label, lo, color in thresholds:
+                if score >= lo:
+                    return label, color
+            return "weak", "#c0392b"
+
+        sil_label, sil_color = _qual_d(sil, [
+            ("strong", 0.5, "#2a8a5e"),
+            ("reasonable", 0.25, "#d4850a"),
+            ("weak", -1.0, "#c0392b"),
+        ])
+        coh_label, coh_color = _qual_d(coh, [
+            ("tight", 0.5, "#2a8a5e"),
+            ("moderate", 0.3, "#d4850a"),
+            ("loose", -1.0, "#c0392b"),
+        ])
+
+        def _fmt_d(v, digits=2):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return "—"
+            return f"{v:.{digits}f}"
+
+        k_source = "auto-selected" if chosen_k_stored is None else "user-selected"
+        st.markdown('<div class="section-label" style="margin-top:1rem">Cluster quality</div>', unsafe_allow_html=True)
+        metrics_html = (
+            '<div class="stat-grid">'
+            '<div class="stat-card">'
+            '<div class="stat-card-label">Clusters (k)</div>'
+            f'<div class="stat-card-value">{k_used if k_used is not None else "—"}</div>'
+            f'<div class="stat-card-sub">{k_source}</div>'
+            '</div>'
+            '<div class="stat-card">'
+            '<div class="stat-card-label">Silhouette</div>'
+            f'<div class="stat-card-value">{_fmt_d(sil)}</div>'
+            f'<div class="stat-card-sub" style="color:{sil_color}">{sil_label} separation</div>'
+            '</div>'
+            '<div class="stat-card">'
+            '<div class="stat-card-label">Cohesion</div>'
+            f'<div class="stat-card-value">{_fmt_d(coh)}</div>'
+            f'<div class="stat-card-sub" style="color:{coh_color}">{coh_label} grouping</div>'
+            '</div>'
+            '</div>'
+        )
+        st.markdown(metrics_html, unsafe_allow_html=True)
+
+        # If we ran an auto-sweep, surface the silhouette curve in an expander
+        # so the user can see why the chosen k won.
+        sweep = metrics.get("k_search_results") or []
+        if sweep:
+            sweep_fig = go.Figure()
+            ks = [k for k, _ in sweep]
+            ss = [s for _, s in sweep]
+            bar_colors = ["#3dab7a" if k == k_used else "#c9d4cb" for k in ks]
+            sweep_fig.add_trace(go.Bar(
+                x=ks, y=ss, marker=dict(color=bar_colors),
+                text=[f"{s:.2f}" for s in ss], textposition="outside",
+                hovertemplate="k=%{x}<br>silhouette=%{y:.3f}<extra></extra>",
+            ))
+            sweep_fig.update_layout(
+                paper_bgcolor="#f7f6f2", plot_bgcolor="#f7f6f2",
+                margin=dict(l=20, r=20, t=10, b=30), height=200,
+                xaxis=dict(title="k (clusters)", color="#888", dtick=1),
+                yaxis=dict(title="silhouette", color="#888", showgrid=True, gridcolor="#ece9df"),
+                font=dict(family="DM Sans"),
+                showlegend=False,
+            )
+            with st.expander(f"Silhouette sweep — k={k_used} picked"):
+                st.plotly_chart(sweep_fig, use_container_width=True)
 
     # ── Topic filter selectbox ────────────────────────────────────────────────
     filter_options = ["All clusters"] + [
@@ -971,7 +1925,10 @@ def render_dendrogram_tab(rows, oura_by_date):
             sub_bio_tuple = tuple(
                 (field, tuple(sub_bio[field])) for field in _BIOMETRIC_FIELDS
             )
-            view_phrases, view_Z, view_cluster_ids = run_dendrogram(
+            # When drilling into a single cluster, let the sub-dendrogram
+            # auto-pick its own k via silhouette — the user already filtered,
+            # so a second slider would be redundant noise.
+            view_phrases, view_Z, view_cluster_ids, _sub_metrics = run_dendrogram(
                 tuple(keep), sub_bio_tuple
             )
         except Exception as e:
@@ -1001,6 +1958,226 @@ def render_dendrogram_tab(rows, oura_by_date):
             )
         legend_html += '</div>'
         st.markdown(legend_html, unsafe_allow_html=True)
+
+        # ── Thematic insights ────────────────────────────────────────────────
+        # The dendrogram retrieved 25 phrases related to the query. The cards
+        # below pivot from describing the CLUSTERING to describing what those
+        # phrases reveal about your life: what's different about your
+        # high-mood vs low-mood theme entries, what biometric signals split
+        # them, which phrases recur together, and which dendrogram cluster
+        # tends to coincide with your best/worst moods.
+        insights = compute_thematic_insights(
+            phrases, cluster_to_phrases, rows, oura_by_date
+        )
+
+        st.markdown('<hr class="divider">', unsafe_allow_html=True)
+        st.markdown('<div class="section-label" style="margin-top:0">Thematic insights</div>', unsafe_allow_html=True)
+
+        n_theme = insights["n_theme"]
+        theme_blurb = (
+            f'Your reflections touched this theme on <strong>{n_theme}</strong> '
+            f'day{"s" if n_theme != 1 else ""}. '
+            f'These cuts contrast what shows up on different kinds of theme days.'
+        )
+        if n_theme == 0:
+            theme_blurb = (
+                'None of your reflections directly contain the retrieved phrases as text — '
+                'the dendrogram surfaced semantically similar concepts, but they don\'t appear verbatim. '
+                'Try a query closer to your own writing.'
+            )
+        st.markdown(
+            f'<div style="color:#666; font-size:0.9rem; margin-bottom:1.2rem; line-height:1.5">{theme_blurb}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if n_theme == 0:
+            # Nothing meaningful to show below — bail cleanly.
+            return
+
+        def _phrase_chip_row(items: list[tuple], variant: str = "good") -> str:
+            """Render a row of phrase chips with their high/low counts.
+            `items` is list of (phrase, high_count, low_count, score)."""
+            if not items:
+                return '<div style="color:#aaa; font-size:0.86rem; padding:0.3rem 0">No phrases stood out for this cut.</div>'
+            cls = "kw-chip" if variant == "good" else "kw-chip kw-chip-neutral"
+            html = '<div class="keywords-row">'
+            for phrase, hi, lo, _score in items:
+                # Show the raw count split so the user can see we're not
+                # over-claiming from a 1-vs-0 cut.
+                html += f'<span class="{cls}">{phrase} <span style="opacity:0.6">&middot; {hi}/{lo}</span></span>'
+            html += "</div>"
+            return html
+
+        # ── Headline insight: mood split ────────────────────────────────────
+        ms = insights["mood_split"] or {}
+        st.markdown(
+            '<div style="font-family:Lora,serif; font-size:1.05rem; font-weight:600; color:#1a1a1a; margin:0.6rem 0 0.3rem">'
+            'What shows up on your higher-mood theme days'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if ms.get("skip"):
+            st.markdown(
+                f'<div style="color:#aaa; font-size:0.88rem; padding:0.4rem 0">{ms.get("reason", "")}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            sub = (
+                f'Split at mood median <strong>{ms["median"]:.1f}</strong> &middot; '
+                f'higher half avg <strong>{ms["mood_high_avg"]:.1f}</strong> (n={ms["n_high"]}) &middot; '
+                f'lower half avg <strong>{ms["mood_low_avg"]:.1f}</strong> (n={ms["n_low"]})'
+            )
+            st.markdown(
+                f'<div style="color:#888; font-size:0.86rem; margin-bottom:0.7rem">{sub}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div style="font-size:0.78rem; font-weight:600; color:#2a8a5e; letter-spacing:0.08em; '
+                'text-transform:uppercase; margin-bottom:0.3rem">More on higher-mood days</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(_phrase_chip_row(ms["top_high_phrases"], "good"), unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:0.78rem; font-weight:600; color:#c25540; letter-spacing:0.08em; '
+                'text-transform:uppercase; margin:0.8rem 0 0.3rem">More on lower-mood days</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(_phrase_chip_row(ms["top_low_phrases"], "low"), unsafe_allow_html=True)
+            st.markdown(
+                '<div style="color:#999; font-size:0.78rem; margin-top:0.5rem; font-style:italic">'
+                'Counts shown as higher-mood / lower-mood. These are associations, not causes — '
+                'the phrase appears more on those days.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Biometric splits ────────────────────────────────────────────────
+        bio_splits = insights["biometric_splits"]
+        any_bio = any(not v.get("skip") for v in bio_splits.values())
+        if any_bio:
+            st.markdown(
+                '<div style="font-family:Lora,serif; font-size:1.05rem; font-weight:600; color:#1a1a1a; margin:1.6rem 0 0.3rem">'
+                'What shows up on different biometric days'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div style="color:#888; font-size:0.86rem; margin-bottom:0.8rem">'
+                'Within this theme, the phrases that distinguish your physiologically good days from bad ones.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            for field, payload in bio_splits.items():
+                if payload.get("skip"):
+                    continue
+                lbl = payload["label"]
+                direction = payload["direction"]
+                # For resting HR (lower is better), we flip the framing so
+                # "higher half" still maps to "physiologically worse" — the
+                # green chip row should always be the favorable side.
+                if field == "resting_hr":
+                    good_side, good_n = payload["top_lo_phrases"], payload["n_lo"]
+                    bad_side, bad_n   = payload["top_hi_phrases"], payload["n_hi"]
+                    good_label = f"lower {lbl}"
+                    bad_label  = f"higher {lbl}"
+                else:
+                    good_side, good_n = payload["top_hi_phrases"], payload["n_hi"]
+                    bad_side, bad_n   = payload["top_lo_phrases"], payload["n_lo"]
+                    good_label = f"higher {lbl}"
+                    bad_label  = f"lower {lbl}"
+
+                with st.expander(f"{lbl.title()} — split at median ({direction})"):
+                    st.markdown(
+                        f'<div style="color:#888; font-size:0.84rem; margin-bottom:0.6rem">'
+                        f'Split at {payload["median"]:.1f}. Better-side avg '
+                        f'{payload["hi_avg"]:.1f} (n={payload["n_hi"]}), '
+                        f'worse-side avg {payload["lo_avg"]:.1f} (n={payload["n_lo"]}).'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<div style="font-size:0.78rem; font-weight:600; color:#2a8a5e; letter-spacing:0.08em; '
+                        f'text-transform:uppercase; margin-bottom:0.3rem">More on {good_label} days (n={good_n})</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(_phrase_chip_row(good_side, "good"), unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="font-size:0.78rem; font-weight:600; color:#c25540; letter-spacing:0.08em; '
+                        f'text-transform:uppercase; margin:0.8rem 0 0.3rem">More on {bad_label} days (n={bad_n})</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(_phrase_chip_row(bad_side, "low"), unsafe_allow_html=True)
+
+        # ── Co-occurring phrases ────────────────────────────────────────────
+        cooc = insights["cooccurrence"]
+        if cooc:
+            st.markdown(
+                '<div style="font-family:Lora,serif; font-size:1.05rem; font-weight:600; color:#1a1a1a; margin:1.6rem 0 0.3rem">'
+                'Phrases that appear together'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div style="color:#888; font-size:0.86rem; margin-bottom:0.7rem">'
+                'Pairs of retrieved phrases that turn up in the same reflection.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            cooc_html = '<div style="display:flex; flex-direction:column; gap:6px">'
+            for a, b, count in cooc:
+                cooc_html += (
+                    f'<div style="display:flex; align-items:center; gap:8px; '
+                    f'background:#f0efe8; padding:8px 12px; border-radius:8px; font-size:0.88rem">'
+                    f'<span class="kw-chip" style="margin:0">{a}</span>'
+                    f'<span style="color:#aaa">+</span>'
+                    f'<span class="kw-chip" style="margin:0">{b}</span>'
+                    f'<span style="color:#888; margin-left:auto; font-size:0.82rem">'
+                    f'co-occurred in <strong>{count}</strong> entr{"ies" if count != 1 else "y"}'
+                    f'</span>'
+                    f'</div>'
+                )
+            cooc_html += '</div>'
+            st.markdown(cooc_html, unsafe_allow_html=True)
+
+        # ── Cluster-level mood ranking ──────────────────────────────────────
+        ranking = insights["cluster_mood_ranking"]
+        if len(ranking) >= 2:
+            st.markdown(
+                '<div style="font-family:Lora,serif; font-size:1.05rem; font-weight:600; color:#1a1a1a; margin:1.6rem 0 0.3rem">'
+                'Cluster mood ranking'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<div style="color:#888; font-size:0.86rem; margin-bottom:0.7rem">'
+                'Average mood across reflections containing any phrase from each cluster.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            rank_html = '<div style="display:flex; flex-direction:column; gap:6px">'
+            mood_min = min(t[2] for t in ranking)
+            mood_max = max(t[2] for t in ranking)
+            mood_range = max(0.1, mood_max - mood_min)  # avoid div-by-zero
+            for cid, n_e, m in ranking:
+                color = DENDRO_COLORS[(cid - 1) % len(DENDRO_COLORS)]
+                # Bar width as a percentage of the mood range so the visual
+                # ranking is unambiguous even when all clusters cluster near
+                # the same mood.
+                pct = int(20 + 80 * (m - mood_min) / mood_range)
+                lbl_text = cluster_names.get(cid, f"Cluster {cid}")
+                rank_html += (
+                    f'<div style="display:flex; align-items:center; gap:10px; font-size:0.88rem">'
+                    f'<span style="width:11px;height:11px;border-radius:50%;background:{color};flex-shrink:0"></span>'
+                    f'<span style="color:#2a2a2a; min-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">Cluster {cid} — {lbl_text}</span>'
+                    f'<div style="flex:1; height:8px; background:#ece9df; border-radius:4px; overflow:hidden">'
+                    f'<div style="width:{pct}%; height:100%; background:{color}"></div>'
+                    f'</div>'
+                    f'<span style="color:#1a1a1a; font-weight:600; min-width:38px; text-align:right">{m:.1f}</span>'
+                    f'<span style="color:#aaa; font-size:0.78rem; min-width:48px; text-align:right">n={n_e}</span>'
+                    f'</div>'
+                )
+            rank_html += '</div>'
+            st.markdown(rank_html, unsafe_allow_html=True)
 
 
 
@@ -1093,6 +2270,200 @@ with st.container():
             st.rerun()
 
 
+
+
+# ── Feelings distribution helpers ────────────────────────────────────────────
+def _collect_feelings(rows: list[dict], min_ratings: int = 1) -> dict[str, list[float]]:
+    """Pull all (feeling_name → list of intensity ratings) from a row set.
+
+    Skip-rated feelings (intensity=None) are excluded since they have no
+    numeric value to plot. Names are lowercased and stripped so "Anxious"
+    and "anxious " count as the same feeling.
+
+    min_ratings filters out feelings logged fewer than N times with a numeric
+    intensity — useful when we want stable distribution shapes, not one-off
+    dots.
+    """
+    bucket: dict[str, list[float]] = {}
+    for r in rows:
+        for f in (r.get("feelings") or []):
+            name = (f.get("name") or "").lower().strip()
+            intensity = f.get("intensity")
+            if not name or intensity is None:
+                continue
+            bucket.setdefault(name, []).append(float(intensity))
+    return {n: vs for n, vs in bucket.items() if len(vs) >= min_ratings}
+
+
+def _top_feelings_by_frequency(
+    rows: list[dict], top_n: int = 6
+) -> list[str]:
+    """Rank feelings by total occurrences (rated + skip-rated combined).
+
+    We rank by raw frequency rather than only by rated frequency because a
+    feeling someone marked seven times this week but never rated is still a
+    dominant feeling worth surfacing — the violin will just be empty/dot for
+    it and that's honest about the data.
+    """
+    counts: dict[str, int] = {}
+    for r in rows:
+        for f in (r.get("feelings") or []):
+            name = (f.get("name") or "").lower().strip()
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+    return [name for name, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:top_n]]
+
+
+# Palette for feelings violins — warm to cool to neutral, picked so adjacent
+# violins don't clash. Cycled if there are more feelings than colors.
+_FEELING_COLORS = [
+    "#e05a3a",  # coral
+    "#d4850a",  # amber
+    "#3dab7a",  # sage
+    "#5b6fa6",  # indigo
+    "#9b59b6",  # plum
+    "#1abc9c",  # teal
+    "#c25540",  # rust
+    "#27ae60",  # emerald
+]
+
+
+def _render_feelings_violin_single(
+    feelings_data: dict[str, list[float]],
+    feeling_order: list[str],
+    title_color: str = "#3dab7a",
+) -> go.Figure | None:
+    """One violin per feeling, intensity on y-axis. Single time window."""
+    feelings_with_data = [f for f in feeling_order if feelings_data.get(f)]
+    if not feelings_with_data:
+        return None
+
+    fig = go.Figure()
+    for i, name in enumerate(feelings_with_data):
+        values = feelings_data[name]
+        color = _FEELING_COLORS[i % len(_FEELING_COLORS)]
+        # Convert hex to rgba for the fill so we can vary opacity without
+        # touching the outline color.
+        fill_rgba = _hex_to_rgba(color, 0.4)
+
+        fig.add_trace(go.Violin(
+            x=[name.title()] * len(values), y=values,
+            name=name.title(),
+            line_color=color, fillcolor=fill_rgba,
+            box_visible=True, meanline_visible=True,
+            points="all", pointpos=0, jitter=0.15,
+            marker=dict(size=5, color=color, line=dict(width=1, color="white")),
+            hoveron="violins+points+kde",
+            hovertemplate=f"<b>{name.title()}</b><br>Intensity: %{{y:.1f}}/10<extra></extra>",
+            spanmode="hard", span=[1, 10],
+            showlegend=False,
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="#faf9f5", plot_bgcolor="#faf9f5",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=360, margin=dict(l=20, r=20, t=20, b=50),
+        xaxis=dict(showgrid=False, color="#666", tickangle=0),
+        yaxis=dict(
+            title="Intensity (1–10)", range=[0.5, 10.5],
+            showgrid=True, gridcolor="#ece9df", color="#666",
+            dtick=1,
+        ),
+        violingap=0.25,
+    )
+    return fig
+
+
+def _render_feelings_violin_compare(
+    recent_data: dict[str, list[float]],
+    alltime_data: dict[str, list[float]],
+    feeling_order: list[str],
+    recent_label: str = "Last 30 days",
+    alltime_label: str = "All time",
+) -> go.Figure | None:
+    """Two violins per feeling side-by-side: recent vs all-time baseline.
+
+    Uses `side="negative"` / `side="positive"` so the two halves sit
+    back-to-back at the same x-tick — the user reads each pair as one
+    feeling, with the left half being the long-term shape and the right half
+    being the recent shape. Anywhere the right half is taller/higher than
+    the left, that feeling has been hitting harder lately than baseline.
+    """
+    # Only plot feelings that have data in at least one window.
+    plottable = [
+        f for f in feeling_order
+        if recent_data.get(f) or alltime_data.get(f)
+    ]
+    if not plottable:
+        return None
+
+    fig = go.Figure()
+    alltime_color = "#5b6fa6"
+    recent_color = "#3dab7a"
+
+    for name in plottable:
+        x_label = name.title()
+        # All-time on the left (negative side) — fainter, "baseline" visual.
+        if alltime_data.get(name):
+            fig.add_trace(go.Violin(
+                x=[x_label] * len(alltime_data[name]), y=alltime_data[name],
+                side="negative", name=alltime_label,
+                line_color=alltime_color, fillcolor=_hex_to_rgba(alltime_color, 0.3),
+                box_visible=True, meanline_visible=True,
+                points=False,
+                hoveron="violins+kde",
+                hovertemplate=(
+                    f"<b>{x_label}</b><br>"
+                    f"{alltime_label}: %{{y:.1f}}/10<extra></extra>"
+                ),
+                spanmode="hard", span=[1, 10],
+                showlegend=(name == plottable[0]),  # show legend entry once
+                legendgroup=alltime_label,
+            ))
+        # Recent on the right (positive side) — bolder, "current" visual.
+        if recent_data.get(name):
+            fig.add_trace(go.Violin(
+                x=[x_label] * len(recent_data[name]), y=recent_data[name],
+                side="positive", name=recent_label,
+                line_color=recent_color, fillcolor=_hex_to_rgba(recent_color, 0.5),
+                box_visible=True, meanline_visible=True,
+                points="all", pointpos=0.4, jitter=0.05,
+                marker=dict(size=4, color=recent_color, line=dict(width=0)),
+                hoveron="violins+points+kde",
+                hovertemplate=(
+                    f"<b>{x_label}</b><br>"
+                    f"{recent_label}: %{{y:.1f}}/10<extra></extra>"
+                ),
+                spanmode="hard", span=[1, 10],
+                showlegend=(name == plottable[0]),
+                legendgroup=recent_label,
+            ))
+
+    fig.update_layout(
+        paper_bgcolor="#faf9f5", plot_bgcolor="#faf9f5",
+        font=dict(family="DM Sans", color="#2a2a2a"),
+        height=400, margin=dict(l=20, r=20, t=20, b=50),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(255,255,255,0)", bordercolor="rgba(0,0,0,0)",
+        ),
+        xaxis=dict(showgrid=False, color="#666", tickangle=0),
+        yaxis=dict(
+            title="Intensity (1–10)", range=[0.5, 10.5],
+            showgrid=True, gridcolor="#ece9df", color="#666",
+            dtick=1,
+        ),
+        violingap=0.3, violinmode="overlay",
+    )
+    return fig
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert a #rrggbb hex string to an rgba() string. Used so violin
+    fills can share a base color with their outline but be translucent."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 # ── Insights agent ────────────────────────────────────────────────────────────
@@ -1389,6 +2760,33 @@ def render_weekly_insights_tab(rows, oura_by_date):
             unsafe_allow_html=True,
         )
 
+    # ── Feelings distribution: violins, this week only ────────────────────────
+    # One violin per top-frequency feeling, showing the spread of intensity
+    # ratings. The chip row below still gives the count + average; the violin
+    # answers "did 'anxious' stay around a 4, or did it swing between 2 and 9
+    # this week?" — which a single mean number can't show.
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Feelings intensity distribution</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#888; font-size:0.88rem; margin-bottom:0.8rem">'
+        'Your top 6 feelings this week, by how intensely you rated each.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    top_feels_week = _top_feelings_by_frequency(week_rows, top_n=6)
+    week_feel_intensities = _collect_feelings(week_rows)
+    fig_feel_week = _render_feelings_violin_single(week_feel_intensities, top_feels_week)
+    if fig_feel_week is not None:
+        st.plotly_chart(fig_feel_week, use_container_width=True)
+    else:
+        st.markdown(
+            '<div style="color:#aaa; font-size:0.88rem; padding:0.5rem 0">'
+            'No rated feelings this week yet — log a few intensities to see the distribution.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
     # ── Weekly trends: keywords + feelings ────────────────────────────────────
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
     col_kw, col_feel = st.columns(2)
@@ -1455,6 +2853,81 @@ def render_reflection_trends_tab(rows, oura_by_date):
 
     # ── Mood vs biometric scatter (user picks sleep / readiness / HRV / RHR / REM)
     oura_ui.render_mood_vs_biometric_chart(rows, oura_by_date)
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+
+    # ── Feelings distribution: last 30 days vs all-time, per feeling ──────────
+    # Side-by-side violins anchor each feeling to its long-term baseline.
+    # If a feeling's recent (right) violin sits higher or fatter than its
+    # all-time (left) violin, the user has been experiencing it more
+    # intensely than usual recently. This is the trends-page equivalent of
+    # the single-window violin in Weekly Insights.
+    st.markdown('<div class="section-label" style="margin-top:0">Feelings intensity: recent vs baseline</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#888; font-size:0.88rem; margin-bottom:0.8rem">'
+        'Top 6 feelings from your last 30 days. Left half of each pair is your '
+        'all-time baseline; right half is the last 30 days.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Recent window: last 30 days inclusive of today.
+    today = user_today()
+    cutoff_30 = (today - timedelta(days=30)).isoformat()
+    recent_rows = [r for r in rows if r["entry_date"] >= cutoff_30]
+
+    # Rank feelings by frequency in the RECENT window — that's what the user
+    # cares about most right now. The all-time violin then provides context
+    # for whether each of those feelings has been hitting harder than usual.
+    top_feels_recent = _top_feelings_by_frequency(recent_rows, top_n=6)
+    recent_intensities = _collect_feelings(recent_rows)
+    alltime_intensities = _collect_feelings(rows)
+    fig_feel_compare = _render_feelings_violin_compare(
+        recent_intensities, alltime_intensities, top_feels_recent,
+        recent_label="Last 30 days", alltime_label="All time",
+    )
+    if fig_feel_compare is not None:
+        st.plotly_chart(fig_feel_compare, use_container_width=True)
+
+        # Inline summary: which feelings have been running hot recently.
+        # We flag a feeling as "elevated" if its 30-day mean is at least 1.0
+        # higher than its all-time mean AND it has enough samples to be
+        # reliable (>=3 ratings in each window).
+        elevated = []
+        cooler = []
+        for name in top_feels_recent:
+            recent_vs = recent_intensities.get(name) or []
+            all_vs = alltime_intensities.get(name) or []
+            if len(recent_vs) >= 3 and len(all_vs) >= 3:
+                delta = float(np.mean(recent_vs) - np.mean(all_vs))
+                if delta >= 1.0:
+                    elevated.append((name, delta))
+                elif delta <= -1.0:
+                    cooler.append((name, delta))
+        if elevated or cooler:
+            bits = []
+            if elevated:
+                names = ", ".join(
+                    f"<strong>{n.title()}</strong> (+{d:.1f})" for n, d in elevated
+                )
+                bits.append(f"running hotter: {names}")
+            if cooler:
+                names = ", ".join(
+                    f"<strong>{n.title()}</strong> ({d:+.1f})" for n, d in cooler
+                )
+                bits.append(f"running cooler: {names}")
+            st.markdown(
+                f"<div style='color:#666; font-size:0.88rem; margin-top:-0.4rem'>"
+                f"vs your all-time baseline &mdash; {' &middot; '.join(bits)}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            '<div style="color:#aaa; font-size:0.88rem; padding:0.5rem 0">'
+            'Not enough rated feelings yet to compare against your baseline.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
     # Build structured summary for Claude
