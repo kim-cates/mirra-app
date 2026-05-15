@@ -1,6 +1,6 @@
-# Reflections App
+# Mirra — Daily Reflection & Life Pattern Discovery
 
-A daily journaling app built with Streamlit, Claude AI keyword extraction, and Supabase storage.
+A Streamlit app for daily journaling with AI-powered thematic analysis, biometric integration (Oura), and advanced insights into your mood patterns and life themes.
 
 ## Setup
 
@@ -9,26 +9,37 @@ A daily journaling app built with Streamlit, Claude AI keyword extraction, and S
 Run this SQL in your Supabase SQL editor:
 
 ```sql
-create table reflections (
+create table users (
   id           uuid primary key default gen_random_uuid(),
-  entry_date   date not null unique,
-  content      text not null,
-  mood         numeric(3,1) not null,
-  keywords     text[] default '{}',
-  updated_at   timestamptz default now()
+  username     text unique not null,
+  password_hash text not null,
+  created_at   timestamptz default now()
 );
 
--- Index for fast date lookups
-create index on reflections (entry_date desc);
+create table reflections (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references users(id),
+  entry_date      date not null,
+  content         text not null,
+  mood            numeric(3,1),
+  keywords        text[] default '{}',
+  feelings        jsonb default '[]',
+  updated_at      timestamptz default now(),
+  unique(user_id, entry_date)
+);
+
+create index on reflections (user_id, entry_date desc);
 ```
+
+Feelings format: `[{"name": "anxious", "intensity": 7}, {"name": "calm", "intensity": null}]`
 
 ### 2. Streamlit secrets
 
 Create `.streamlit/secrets.toml` in the project root:
 
 ```toml
-SUPABASE_URL     = "https://your-project.supabase.co"
-SUPABASE_KEY     = "your-anon-public-key"
+SUPABASE_URL      = "https://your-project.supabase.co"
+SUPABASE_KEY      = "your-anon-public-key"
 ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
@@ -41,8 +52,56 @@ streamlit run app.py
 
 ## Features
 
-- **Daily reflection** — one entry per day, auto-upserts on re-save
-- **Mood slider** — 1–10 scale stored per entry
-- **AI keywords** — Claude extracts 5–8 themes from your text automatically
-- **Streak counter** — consecutive days with an entry
-- **Stats panel** — total entries, 30-day avg mood, top keyword this week
+### Core Journaling
+- **Daily reflection** — one entry per day with content, mood (1–10), and feelings
+- **Feelings tracking** — multi-select feelings with optional intensity ratings (1–10)
+- **Keyword extraction** — automatically extracts themes from your reflection text
+- **Streak counter** — tracks consecutive days with entries
+- **Quick stats** — total entries, 30-day mood average, top theme this week
+
+### Advanced Analysis
+
+#### Topic Map
+- **UMAP dimensionality reduction** — visualize your reflections in 2D semantic space
+- **Auto-clustered topics** — KMeans with silhouette score optimization
+- **Biometric-aware clustering** — clusters factor in mood, sleep score, readiness, HRV, and resting HR
+- **Per-cluster summaries** — mood averages, top feelings, key reflection terms
+
+#### Phrase Dendrogram
+- **Semantic theme explorer** — enter a concept (e.g., "stress", "creative flow") and find related phrases
+- **Hierarchical clustering** — see how themes branch and relate to each other
+- **Thematic insights** — automatically discover what distinguishes good days from bad days within a theme:
+  - **Mood split** — phrases that appear more on high-mood vs low-mood theme days
+  - **Biometric splits** — what sleep/readiness/HRV patterns correlate with theme days
+  - **Co-occurrence analysis** — which phrases appear together
+  - **Cluster mood ranking** — which clusters tend toward positive vs negative moods
+
+#### Weekly Insights
+- **Oura biometrics summary** — this week's sleep, readiness, activity, and resting HR
+- **Mood distribution** — histogram + KDE showing mood variance this week vs all-time
+- **Feelings intensity** — violin plots showing how your feelings fluctuate week-to-week
+- **Top themes & feelings** — quick overview of what dominated the week
+
+### Architecture
+
+The app is modularized into focused components:
+- `config.py` — styling, constants, page configuration
+- `auth.py` — user authentication (login/signup)
+- `data_manager.py` — database operations
+- `nlp_utils.py` — embeddings, clustering, similarity search (UMAP, KMeans, hierarchical)
+- `insights.py` — thematic analysis and insight computation
+- `visualizations.py` — chart rendering (Plotly)
+
+See `REFACTORING_GUIDE.md` for detailed module documentation.
+
+## Dependencies
+
+- **Streamlit** — web UI framework
+- **Supabase** — PostgreSQL backend
+- **sentence-transformers** — semantic embeddings
+- **scikit-learn** — ML (KMeans, TF-IDF, vectorization)
+- **UMAP** — dimensionality reduction
+- **SciPy** — hierarchical clustering
+- **Plotly** — interactive charts
+- **NumPy/Pandas** — data processing
+- **Oura SDK** — biometric data integration (optional)
