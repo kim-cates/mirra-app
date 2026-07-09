@@ -15,13 +15,29 @@ from intro_page import render_intro_page, user_has_seen_intro
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Mirra", layout="centered")
+st.set_page_config(page_title="Mirra", page_icon="logo.png", layout="centered")
 
 # Mobile viewport — Streamlit doesn't always inject one, and without this
 # phones render at desktop-width and zoom out, making everything tiny.
+app_icon_base64 = None
+try:
+    with open("logo.png", "rb") as f:
+        app_icon_base64 = base64.b64encode(f.read()).decode()
+except FileNotFoundError:
+    app_icon_base64 = None
+
+icon_links = ''
+if app_icon_base64:
+    icon_links = f'''
+    <link rel="icon" type="image/png" href="data:image/png;base64,{app_icon_base64}">
+    <link rel="shortcut icon" href="data:image/png;base64,{app_icon_base64}">
+    <link rel="apple-touch-icon" href="data:image/png;base64,{app_icon_base64}">
+    <meta name="theme-color" content="#faf9f5">
+    '''
+
 st.markdown(
     '<meta name="viewport" content="width=device-width, initial-scale=1.0, '
-    'maximum-scale=5.0">',
+    'maximum-scale=5.0">' + icon_links,
     unsafe_allow_html=True,
 )
 
