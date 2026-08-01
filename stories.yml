@@ -1,0 +1,146 @@
+sprint: "Sprint 1"
+labels:
+  story:   { color: "1D76DB", description: "User story" }
+  task:    { color: "C5DEF5", description: "Sub-issue of a story" }
+  backend: { color: "0E8A16", description: "Server / data layer" }
+  frontend: { color: "5319E7", description: "UI layer" }
+  ux:      { color: "D93F0B", description: "Design / experience" }
+  integration: { color: "FBCA04", description: "Third-party connector" }
+  infra:   { color: "666666", description: "Platform / deployment" }
+  enabler: { color: "B60205", description: "Unblocks other work" }
+
+stories:
+  - key: MIR-1
+    title: "MIR-1: Expand user profile data"
+    labels: [story, backend, frontend]
+    points: 3
+    body: |
+      **As a** Mirra user
+      **I want** to store richer profile details (contact info, demographics)
+      **So that** my reflections and insights can be contextualized to who I am.
+
+      ### Acceptance criteria
+      - [ ] `profiles` table extended with: `email`, `phone`, `date_of_birth`, `sex`, `gender_identity`, `location`, `timezone`, `occupation`
+      - [ ] All new fields optional — no field blocks account creation
+      - [ ] Create User page renders new fields in logical groups (Contact / About You)
+      - [ ] Client + server validation on email and phone, with inline error messages
+      - [ ] Existing users can edit these fields from a Profile Settings view
+      - [ ] RLS policies confirmed: a user can only read/write their own row
+      - [ ] Timezone defaults to `Pacific/Honolulu`, is user-editable, and `user_today()` reads from it
+    sub_issues:
+      - title: "Supabase migration for expanded profile fields + RLS review"
+      - title: "Profile form UI and field grouping"
+      - title: "Validation helpers (validate_email, validate_phone)"
+      - title: "Profile edit flow for existing accounts"
+
+  - key: MIR-2
+    title: "MIR-2: Personalized UI — goals, profile tree, insight preferences"
+    labels: [story, frontend, ux]
+    points: 8
+    body: |
+      **As a** Mirra user
+      **I want** to declare what I'm trying to improve and how I like to receive insights
+      **So that** the app reflects my intentions back to me instead of showing generic output.
+
+      ### Acceptance criteria
+      - [ ] User can add goals in two categories: **Improve** and **Avoid**
+      - [ ] Each goal has a label, optional target metric, optional linked data source
+      - [ ] Goals are editable and archivable (soft delete — history preserved)
+      - [ ] Profile tree renders goals, connected sources, and tracked feelings as a hierarchy
+      - [ ] User selects which data sources to integrate; unselected sources hidden from all views
+      - [ ] Insight preference setting with three modes: `data_driven`, `insight_focused`, `hybrid` (default)
+      - [ ] Preference measurably changes output on Weekly Insights
+      - [ ] Preference persisted and applied on next login
+
+      ### Notes
+      Splittable: the profile tree can be carved out as MIR-2b (3 pts) if the sprint tightens.
+    sub_issues:
+      - title: "Schema: user_goals, user_data_sources, insight_preference"
+      - title: "Goals CRUD UI (Improve / Avoid)"
+      - title: "Profile tree component"
+      - title: "Insight preference selector wired into Weekly Insights rendering"
+
+  - key: MIR-3
+    title: "MIR-3: Generalized OAuth framework"
+    labels: [story, backend, enabler]
+    points: 5
+    body: |
+      **As a** developer
+      **I want** a provider-agnostic OAuth layer
+      **So that** adding an integration is a config change, and connecting an account feels identical across providers.
+
+      ### Acceptance criteria
+      - [ ] `OAuthProvider` abstraction: auth URL builder, token exchange, refresh, scopes, revoke
+      - [ ] Existing Oura integration refactored onto the abstraction with no regression in data pulls
+      - [ ] Spotify implemented as the second provider, proving the abstraction generalizes
+      - [ ] Tokens stored encrypted; refresh happens automatically on expiry without user action
+      - [ ] Single Connections page listing providers as Connected / Not connected / Needs reauth
+      - [ ] Connect and disconnect are one click each
+      - [ ] Failed auth returns a human-readable error, not a stack trace or raw callback dump
+      - [ ] Callback handler validates `state` parameter (CSRF protection)
+    sub_issues:
+      - title: "Define OAuthProvider interface and provider registry"
+      - title: "Refactor Oura onto the provider interface"
+      - title: "Token storage, encryption, and refresh scheduler"
+      - title: "Spotify provider implementation"
+      - title: "Connections page UI"
+
+  - key: MIR-4
+    title: "MIR-4: Connector implementations"
+    labels: [story, integration]
+    points: 8
+    blocked_by: MIR-3
+    body: |
+      **As a** Mirra user
+      **I want** to connect the apps I already use
+      **So that** my reflections sit alongside real behavioral and biometric data without manual entry.
+
+      ### Acceptance criteria
+      - [ ] Each connector defines its normalized output schema before implementation begins
+      - [ ] Spotify — listening history, audio features (valence, energy, tempo) as daily aggregates
+      - [ ] Whoop — recovery, strain, sleep
+      - [ ] Fitbit — sleep, steps, HR
+      - [ ] Apple Watch / Health — ingestion path documented (Shortcuts + Edge Function pattern)
+      - [ ] Obsidian — approach spiked and documented; implementation may defer
+      - [ ] All biometric sources write to a common `biometrics` table with a `source` column
+      - [ ] Connecting a source backfills 30+ days of history where the API allows
+      - [ ] Rate limit and failure handling: retries with backoff, no silent data gaps
+
+      ### Notes
+      Blocked by MIR-3. Recommend committing to Spotify + Whoop only; move the rest to backlog with schema work done.
+    sub_issues:
+      - title: "Normalized biometrics schema (shared prerequisite)"
+      - title: "Spotify connector"
+      - title: "Whoop connector"
+      - title: "Fitbit connector"
+      - title: "Apple Health ingestion path (Shortcuts + Edge Function)"
+      - title: "Spike: Obsidian vault ingestion approach"
+
+  - key: MIR-5
+    title: "MIR-5: Progressive Web App"
+    labels: [story, frontend, infra]
+    points: 5
+    body: |
+      **As a** Mirra user
+      **I want** to install Mirra on my phone's home screen and use it like a native app
+      **So that** daily reflection has as little friction as possible.
+
+      ### Acceptance criteria
+      - [ ] `manifest.json` served with name, short name, theme color, icons at 192/512/maskable
+      - [ ] Service worker registered; app shell cached
+      - [ ] Add to Home Screen prompt appears on iOS Safari and Android Chrome
+      - [ ] Launches standalone — no browser chrome visible
+      - [ ] Offline: app loads with a clear offline state, not a blank screen
+      - [ ] Draft reflections written offline persist locally and sync on reconnect
+      - [ ] Lighthouse PWA audit passes installability checks
+      - [ ] All existing tabs verified usable at 390px width
+
+      ### Risk
+      Streamlit's iframe architecture makes service worker registration awkward. Timebox a spike first;
+      fallback is manifest-only install (home screen icon + standalone launch, no offline).
+    sub_issues:
+      - title: "Spike: service worker registration under Streamlit"
+      - title: "manifest.json + icon set"
+      - title: "Service worker and app shell caching"
+      - title: "Offline draft persistence and sync"
+      - title: "Mobile layout audit at 390px"
