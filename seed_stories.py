@@ -16,6 +16,7 @@ import argparse
 import json
 import subprocess
 import sys
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -29,7 +30,24 @@ def run(args, check=True):
     if DRY:
         print(f"  [dry-run] {' '.join(args)}")
         return ""
-    proc = subprocess.run(args, capture_output=True, text=True)
+    # ensure the executable exists on PATH (helpful on Windows where FileNotFoundError occurs)
+    exe = args[0]
+    if shutil.which(exe) is None:
+        # try common Windows executable suffix
+        if sys.platform.startswith("win") and not exe.lower().endswith(".exe") and shutil.which(exe + ".exe"):
+            args[0] = exe + ".exe"
+        else:
+            sys.exit(
+                f"Executable not found: {exe}.\nPlease install the required CLI and ensure it's on PATH.\nSee https://cli.github.com/ for the GitHub CLI ('gh')."
+            )
+
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit(
+            f"Command not found: {args[0]}.\nPlease install the required CLI and ensure it's on PATH.\nSee https://cli.github.com/ for the GitHub CLI ('gh')."
+        )
+
     if check and proc.returncode != 0:
         sys.exit(f"\nFAILED: {' '.join(args)}\n{proc.stderr}")
     return proc.stdout.strip()
