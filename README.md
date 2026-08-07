@@ -42,12 +42,15 @@ Feelings format: `[{"name": "anxious", "intensity": 7}, {"name": "calm", "intens
 
 ### 2. Streamlit secrets
 
-Create `.streamlit/secrets.toml` in the project root:
+Create `.streamlit/secrets.toml` in the project root, or copy `.streamlit/secrets.example.toml` and fill in the values:
 
 ```toml
 SUPABASE_URL      = "https://your-project.supabase.co"
 SUPABASE_KEY      = "your-anon-public-key"
 ANTHROPIC_API_KEY = "sk-ant-..."
+OURA_CLIENT_ID    = "your-oura-client-id"
+OURA_CLIENT_SECRET = "your-oura-client-secret"
+OURA_REDIRECT_URI = "https://your-deployed-app-url/"
 ```
 
 ### 3. Install & run
