@@ -12,6 +12,8 @@ import oura
 import oura_ui
 from oura import user_today
 from intro_page import render_intro_page, user_has_seen_intro
+from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
+from profile_form import render_profile_form, user_has_completed_profile
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -2271,6 +2273,16 @@ if not st.session_state.get("logged_in"):
 # gate falls through.
 if not user_has_seen_intro(supabase, st.session_state["user_id"]):
     render_intro_page(supabase, st.session_state["user_id"])
+    st.stop()
+
+# Onboarding chain (MIR-1): each gate shows once and falls through after
+# completion — login → intro → profile (#16) → inquiry (#43) → app.
+if not user_has_completed_profile(st.session_state["user_id"]):
+    render_profile_form(supabase, st.session_state["user_id"], mode="create")
+    st.stop()
+
+if not user_has_completed_inquiry(st.session_state["user_id"]):
+    render_insight_inquiry(supabase, st.session_state["user_id"])
     st.stop()
 
 # Logout button

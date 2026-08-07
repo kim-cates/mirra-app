@@ -91,3 +91,44 @@ create policy "oura_credentials: update own"
 create policy "oura_credentials: delete own"
   on public.oura_credentials for delete
   using (auth.uid() = user_id);
+
+
+-- ──────────────────────────────────────────────────────────────────────────
+--  MIR-1: Expand user profile data  (story #14, sub-issue #15)
+--  Run in the Supabase SQL editor. DRAFT — not yet applied (awaiting creds).
+--
+--  ⚠ DECISION NEEDED (Kim): the story says "profiles" table, but the app today
+--  authenticates against the custom public.users table (auth.py) and reads
+--  st.session_state["user_id"] from users.id — there is NO Supabase Auth
+--  session, so a separate profiles table keyed on auth.users would not be
+--  populated or read by the current code. This migration therefore extends the
+--  EXISTING public.users table so the fields are functional immediately.
+--  If we instead move to Supabase Auth + a profiles table, that is a larger
+--  change (MIR-1 identity refactor) and this block should be revisited.
+--  All fields are OPTIONAL — nothing here blocks account creation.
+-- ──────────────────────────────────────────────────────────────────────────
+
+alter table public.users
+  add column if not exists email            text,
+  add column if not exists phone            text,
+  add column if not exists date_of_birth    date,
+  add column if not exists sex              text,
+  add column if not exists gender_identity  text,
+  add column if not exists location         text,
+  add column if not exists timezone         text  default 'Pacific/Honolulu',
+  add column if not exists occupation       text;
+
+-- Case-insensitive uniqueness on email, but only when an email is present
+-- (fields are optional, so NULL/empty emails must not collide).
+create unique index if not exists idx_users_email
+  on public.users (lower(email))
+  where email is not null and email <> '';
+
+-- ── RLS review (sub-issue #15) ────────────────────────────────────────────
+-- public.users currently has NO RLS policies in this file (the table pre-dates
+-- migrations.sql). The oura_* tables above scope on auth.uid(), which assumes
+-- Supabase Auth identities — but users.id is NOT an auth.users id. Enabling
+-- auth.uid()-based RLS on public.users would lock the app out under the current
+-- custom-auth model. Confirm the authoritative identity with Kim before adding
+-- RLS here; leaving users RLS untouched for now to avoid breaking sign-in.
+--   → see Transcripts/skills/supabase-tables.SKILL.md ("two identity systems").
