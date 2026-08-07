@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import shutil
@@ -24,25 +25,57 @@ import yaml
 
 DRY = False
 
+# Standard install locations, checked when 'gh' isn't on PATH. The winget/MSI
+# installer writes its directory to the *machine* PATH, so terminals opened
+# before the install (VS Code included) never see it until they're restarted.
+GH_FALLBACK_DIRS = [
+    r"C:\Program Files\GitHub CLI",
+    r"C:\Program Files (x86)\GitHub CLI",
+    os.path.expandvars(r"%LOCALAPPDATA%\GitHubCLI"),
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\GitHub CLI"),
+    os.path.expandvars(r"%USERPROFILE%\scoop\shims"),
+    r"C:\ProgramData\chocolatey\bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+]
+
+
+def find_gh():
+    """Resolve the gh executable, falling back to known install dirs."""
+    found = shutil.which("gh")
+    if found:
+        return found
+    for directory in GH_FALLBACK_DIRS:
+        for name in ("gh.exe", "gh"):
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    sys.exit(
+        "GitHub CLI ('gh') not found on PATH or in any standard install location.\n"
+        "Install it from https://cli.github.com/ , or if it is already installed,\n"
+        "open a new terminal so the updated PATH is picked up."
+    )
+
+
+GH = None  # resolved once in main()
+
 
 def run(args, check=True):
     """Run a command, return stdout. Exit loudly on failure."""
+    # Substitute the resolved absolute path so we never depend on PATH lookup.
+    if args and args[0] == "gh" and GH:
+        args = [GH] + list(args[1:])
+
     if DRY:
         print(f"  [dry-run] {' '.join(args)}")
         return ""
-    # ensure the executable exists on PATH (helpful on Windows where FileNotFoundError occurs)
-    exe = args[0]
-    if shutil.which(exe) is None:
-        # try common Windows executable suffix
-        if sys.platform.startswith("win") and not exe.lower().endswith(".exe") and shutil.which(exe + ".exe"):
-            args[0] = exe + ".exe"
-        else:
-            sys.exit(
-                f"Executable not found: {exe}.\nPlease install the required CLI and ensure it's on PATH.\nSee https://cli.github.com/ for the GitHub CLI ('gh')."
-            )
 
     try:
-        proc = subprocess.run(args, capture_output=True, text=True)
+        # Force UTF-8: gh emits UTF-8, but text=True decodes with the locale
+        # codec (cp1252 on Windows), which dies on smart quotes/em dashes and
+        # leaves proc.stdout as None.
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
     except FileNotFoundError:
         sys.exit(
             f"Command not found: {args[0]}.\nPlease install the required CLI and ensure it's on PATH.\nSee https://cli.github.com/ for the GitHub CLI ('gh')."
@@ -51,6 +84,29 @@ def run(args, check=True):
     if check and proc.returncode != 0:
         sys.exit(f"\nFAILED: {' '.join(args)}\n{proc.stderr}")
     return proc.stdout.strip()
+
+
+def preflight():
+    """Fail early with an actionable message if gh isn't authed with project scopes."""
+    proc = subprocess.run([GH, "auth", "status"], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        sys.exit(f"gh is installed but not authenticated. Run:\n    gh auth login\n\n{proc.stderr}")
+
+    scopes_line = next(
+        (ln for ln in (proc.stdout + proc.stderr).splitlines() if "Token scopes:" in ln), ""
+    )
+    # Seeding writes to the board (field-create, item-add, item-edit), so the
+    # full 'project' scope is required. 'read:project' is read-only and is NOT
+    # sufficient — it lets `gh project list` succeed while every write fails.
+    if "'project'" not in scopes_line:
+        sys.exit(
+            "Your gh token lacks the 'project' scope, so the board can't be written to.\n"
+            f"Current scopes: {scopes_line.strip() or 'unknown'}\n\n"
+            "Note: 'read:project' is read-only and is not enough.\n"
+            "Run this once, in your own terminal (it opens a browser):\n"
+            "    gh auth refresh -s project\n"
+        )
 
 
 def run_json(args):
@@ -81,7 +137,8 @@ def ensure_labels(repo, labels):
 
 def create_issue(repo, title, body, labels):
     """Create an issue and return (url, node_id)."""
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False,
+                                     encoding="utf-8") as fh:
         fh.write(body)
         body_path = fh.name
 
@@ -182,7 +239,7 @@ def set_single_select(project_id, item_id, field, option_name):
 # --------------------------------------------------------------------------
 
 def main():
-    global DRY
+    global DRY, GH
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="owner/repo")
     ap.add_argument("--owner", required=True, help="project owner (user or org)")
@@ -196,7 +253,14 @@ def main():
     if DRY:
         print("=== DRY RUN — no writes ===\n")
 
-    data = yaml.safe_load(Path(args.file).read_text())
+    GH = find_gh()
+    print(f"Using gh: {GH}")
+    if not DRY:
+        preflight()
+
+    # stories.yml is UTF-8; without this it decodes as cp1252 on Windows and
+    # every em dash / smart quote reaches GitHub as mojibake.
+    data = yaml.safe_load(Path(args.file).read_text(encoding="utf-8"))
 
     ensure_labels(args.repo, data.get("labels", {}))
 

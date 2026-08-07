@@ -1,4 +1,7 @@
 sprint: "Sprint 1"
+planning_links:
+  miro_board: "https://miro.com/app/board/uXjVHzho-kY=/"
+  github_project_board: "https://github.com/users/kim-cates/projects/2/views/1"
 labels:
   story:   { color: "1D76DB", description: "User story" }
   task:    { color: "C5DEF5", description: "Sub-issue of a story" }
