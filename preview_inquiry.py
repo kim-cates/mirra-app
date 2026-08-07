@@ -9,21 +9,13 @@ import json
 
 import streamlit as st
 
+from config import configure_page, apply_styling
 from insight_inquiry import render_insight_inquiry, _STATE_KEY
 
-st.set_page_config(page_title="Mirra — inquiry preview", page_icon="🪞", layout="centered")
-
-st.markdown(
-    """
-    <style>
-      /* Mirra-ish look: cream background, sage accent (config.py palette) */
-      .stApp { background-color: #faf9f5; }
-      h1, h2, h3 { font-family: Georgia, 'Lora', serif; color: #2f3e34; }
-      .stButton > button[kind="primary"] { background-color: #3dab7a; border: none; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# The app's real design system (config.py) — the quiz inherits it in app.py,
+# so the preview must render with the exact same styling, not custom CSS.
+configure_page()
+apply_styling()
 
 st.markdown("## mirra")
 st.caption("Preview: onboarding insight inquiry (#43) — not wired to the database")
