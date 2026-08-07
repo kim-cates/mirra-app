@@ -153,6 +153,18 @@ create policy "connections: delete own" on public.connections
 -- whoop_daily(user_id, entry_date, recovery_score, hrv_avg, resting_hr, sleep_performance, raw, fetched_at)
 ```
 
+**If we standardize on `public.users` instead** (current custom-auth model), swap
+two things and drop the `auth.uid()` RLS (which assumes a Supabase Auth session
+the app doesn't have today):
+
+```sql
+--   user_id  uuid ... references public.users(id) on delete cascade
+-- RLS: either leave disabled to match the existing public.users tables, or add
+-- app-enforced scoping — do NOT use auth.uid() (it's null under custom auth).
+```
+
+Both variants are ready; picking one is the identity decision below.
+
 ### Migration path (zero downtime)
 
 1. Apply `connections` DDL in the Supabase SQL editor; mirror into `migrations.sql`.
