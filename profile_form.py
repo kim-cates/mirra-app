@@ -72,6 +72,12 @@ def validate_profile() -> dict[str, str]:
     return errors
 
 
+def user_has_completed_profile(user_id: str) -> bool:
+    """True once the user saved the onboarding profile (session-scoped for
+    now; will read from the users table once the #15 migration lands)."""
+    return _STATE_KEY in st.session_state
+
+
 def save_profile(supabase, user_id: str, values: dict) -> None:
     """Persist profile values.
 
