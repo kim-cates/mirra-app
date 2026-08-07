@@ -2277,11 +2277,11 @@ if not user_has_seen_intro(supabase, st.session_state["user_id"]):
 
 # Onboarding chain (MIR-1): each gate shows once and falls through after
 # completion — login → intro → profile (#16) → inquiry (#43) → app.
-if not user_has_completed_profile(st.session_state["user_id"]):
+if not user_has_completed_profile(supabase, st.session_state["user_id"]):
     render_profile_form(supabase, st.session_state["user_id"], mode="create")
     st.stop()
 
-if not user_has_completed_inquiry(st.session_state["user_id"]):
+if not user_has_completed_inquiry(supabase, st.session_state["user_id"]):
     render_insight_inquiry(supabase, st.session_state["user_id"])
     st.stop()
 

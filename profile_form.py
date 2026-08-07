@@ -72,18 +72,41 @@ def validate_profile() -> dict[str, str]:
     return errors
 
 
-def user_has_completed_profile(user_id: str) -> bool:
-    """True once the user saved the onboarding profile (session-scoped for
-    now; will read from the users table once the #15 migration lands)."""
-    return _STATE_KEY in st.session_state
+def user_has_completed_profile(supabase, user_id: str) -> bool:
+    """True once the user saved the onboarding profile.
+
+    Reads users.profile_completed_at (#15 migration); falls back to session
+    state while the column doesn't exist yet, so the flow works pre-migration.
+    """
+    if st.session_state.get(_STATE_KEY):
+        return True
+    if supabase is not None:
+        try:
+            res = (supabase.table("users").select("profile_completed_at")
+                   .eq("id", user_id).limit(1).execute())
+            if res.data and res.data[0].get("profile_completed_at"):
+                st.session_state[_STATE_KEY] = {"from_db": True}
+                return True
+        except Exception:
+            pass  # column not migrated yet — session gate only
+    return False
 
 
 def save_profile(supabase, user_id: str, values: dict) -> None:
-    """Persist profile values.
+    """Persist profile values to users (#15) with session fallback.
 
-    DB seam (#15): becomes a Supabase update on the users table once the
-    migration is applied; session-backed until then so the flow already works.
+    Writes the profile columns + profile_completed_at. If the migration
+    hasn't been applied yet the update fails silently and the session copy
+    keeps the flow working.
     """
+    if supabase is not None:
+        try:
+            from datetime import datetime, timezone as tz
+            supabase.table("users").update(
+                {**values, "profile_completed_at": datetime.now(tz.utc).isoformat()}
+            ).eq("id", user_id).execute()
+        except Exception:
+            pass  # pre-migration — session fallback below
     st.session_state[_STATE_KEY] = values
 
 

@@ -116,7 +116,15 @@ alter table public.users
   add column if not exists gender_identity  text,
   add column if not exists location         text,
   add column if not exists timezone         text  default 'Pacific/Honolulu',
-  add column if not exists occupation       text;
+  add column if not exists occupation       text,
+  -- Onboarding completion markers: all profile fields are optional, so
+  -- completion can't be inferred from data — explicit timestamps gate the
+  -- once-per-user onboarding screens (profile form, insight inquiry).
+  add column if not exists profile_completed_at  timestamptz,
+  add column if not exists inquiry_completed_at  timestamptz,
+  -- INTERIM: inquiry answers as jsonb until the goals schema (#20) lands;
+  -- backfill into user_goals and drop this column once #20 is decided.
+  add column if not exists inquiry_responses     jsonb;
 
 -- Case-insensitive uniqueness on email, but only when an email is present
 -- (fields are optional, so NULL/empty emails must not collide).

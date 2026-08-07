@@ -160,17 +160,37 @@ def _all_selected_categories() -> list[str]:
 def save_inquiry_responses(supabase, user_id: str, responses: dict) -> None:
     """Persist inquiry responses.
 
-    DB seam (issue #43 ↔ #20): the goals/inquiry table is being aligned with
-    Kim's MIR-2 schema (user_goals). Until that lands we keep responses in
-    session state so the rest of the app can already read them; swapping this
-    body for a Supabase upsert is the only change needed later.
+    Interim storage (#43 ↔ #20): writes users.inquiry_responses (jsonb) +
+    users.inquiry_completed_at, until Kim's user_goals schema (#20) lands —
+    then this becomes per-row inserts and the jsonb column gets backfilled
+    and dropped. Falls back to session state pre-migration.
     """
+    if supabase is not None:
+        try:
+            from datetime import datetime, timezone as tz
+            supabase.table("users").update({
+                "inquiry_responses": responses,
+                "inquiry_completed_at": datetime.now(tz.utc).isoformat(),
+            }).eq("id", user_id).execute()
+        except Exception:
+            pass  # pre-migration — session fallback below
     st.session_state[_STATE_KEY] = responses
 
 
-def user_has_completed_inquiry(user_id: str) -> bool:
-    """True once the user submitted the inquiry (session-scoped for now)."""
-    return bool(st.session_state.get(_STATE_KEY))
+def user_has_completed_inquiry(supabase, user_id: str) -> bool:
+    """True once the user submitted the inquiry (DB marker, session fallback)."""
+    if st.session_state.get(_STATE_KEY):
+        return True
+    if supabase is not None:
+        try:
+            res = (supabase.table("users").select("inquiry_completed_at")
+                   .eq("id", user_id).limit(1).execute())
+            if res.data and res.data[0].get("inquiry_completed_at"):
+                st.session_state[_STATE_KEY] = {"from_db": True}
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _render_question(q: dict) -> None:
