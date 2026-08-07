@@ -2,6 +2,13 @@
 
 A Streamlit app for daily journaling with AI-powered thematic analysis, biometric integration (Oura), and advanced insights into your mood patterns and life themes.
 
+## Planning & Roadmaps
+
+- Miro board: https://miro.com/app/board/uXjVHzho-kY=/
+- GitHub Project board: https://github.com/users/kim-cates/projects/2/views/1
+- Story backlog source: `stories.yml`
+
+
 ## Setup
 
 ### 1. Supabase table
@@ -18,7 +25,7 @@ create table users (
 
 create table reflections (
   id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references users(id),
+  user_id         uuid not null references users(id),u
   entry_date      date not null,
   content         text not null,
   mood            numeric(3,1),
