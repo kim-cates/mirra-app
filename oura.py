@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 try:
     # Python 3.9+ — preferred
@@ -89,14 +89,15 @@ def build_oauth_authorize_url(client_id: str, redirect_uri: str,
 
     `state` should be a random nonce you store in session and verify on callback.
     """
-    params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": scopes,
-        "state": state,
-    }
-    return f"{OURA_AUTH_BASE}/oauth/authorize?{urlencode(params)}"
+    # Build the query using quote to ensure spaces in scopes are encoded as '%20'
+    # which some OAuth providers (including Oura) expect, instead of '+'.
+    q = (
+        f"response_type=code&client_id={quote(client_id, safe='')}"
+        f"&redirect_uri={quote(redirect_uri, safe='')}"
+        f"&scope={quote(scopes, safe='')}"
+        f"&state={quote(state, safe='')}"
+    )
+    return f"{OURA_AUTH_BASE}/oauth/authorize?{q}"
 
 
 def exchange_code_for_token(code: str, client_id: str, client_secret: str,
@@ -480,8 +481,22 @@ def build_today_view(oura_by_date: dict[str, dict]) -> Optional[dict]:
         if today_row.get(m) is not None:
             merged[m] = today_row[m]
             sources[m] = "today"
-        elif yesterday_row.get(m) is not None:
-            merged[m] = yesterday_row[m]
-            sources[m] = "yesterday"
-    merged["_source_by_metric"] = sources
-    return merged
+        today_iso = user_today().isoformat()
+        yesterday_iso = (user_today() - timedelta(days=1)).isoformat()
+        today_row = oura_by_date.get(today_iso) or {}
+        yesterday_row = oura_by_date.get(yesterday_iso) or {}
+
+        if not today_row and not yesterday_row:
+            return None
+
+        merged: dict = {"entry_date": today_iso}
+        sources: dict[str, str] = {}
+        for m in _FALLBACKABLE_METRICS:
+            if today_row.get(m) is not None:
+                merged[m] = today_row[m]
+                sources[m] = "today"
+            elif yesterday_row.get(m) is not None:
+                merged[m] = yesterday_row[m]
+                sources[m] = "yesterday"
+        merged["_source_by_metric"] = sources
+        return merged
