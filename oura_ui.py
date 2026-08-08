@@ -35,9 +35,21 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
 
     expected = st.session_state.get("oura_oauth_state")
     if not expected or state != expected:
-        st.error("Oura OAuth state mismatch — please retry the connection.")
-        st.query_params.clear()
-        return
+        # Fallback to server-side persisted state if the session was lost.
+        persisted_state = None
+        try:
+            res = supabase.table("oura_oauth_states").select("*").eq("state", state).execute()
+            persisted_state = (res.data or [None])[0] if res.data else None
+        except Exception:
+            persisted_state = None
+
+        if persisted_state and persisted_state.get("user_id") == user_id:
+            expected = state
+            st.session_state["oura_oauth_state"] = state
+        else:
+            st.error("Oura OAuth state mismatch — please retry the connection.")
+            st.query_params.clear()
+            return
 
     try:
         client_id = st.secrets["OURA_CLIENT_ID"]
