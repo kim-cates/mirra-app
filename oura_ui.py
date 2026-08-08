@@ -34,10 +34,23 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
         return
 
     expected = st.session_state.get("oura_oauth_state")
+    # If the client-side session state is missing (commonly lost when the
+    # user is redirected to sign in), fall back to a server-side lookup of
+    # the state saved earlier in Supabase.
     if not expected or state != expected:
-        st.error("Oura OAuth state mismatch — please retry the connection.")
-        st.query_params.clear()
-        return
+        try:
+            row_res = supabase.table("oura_oauth_states").select("*").eq("state", state).execute()
+            rows = row_res.data or []
+            if not rows:
+                st.error("Oura OAuth state mismatch — please retry the connection.")
+                st.query_params.clear()
+                return
+            server_row = rows[0]
+            # Proceed using the server-side record; continue to exchange code
+        except Exception:
+            st.error("Oura OAuth state mismatch — please retry the connection.")
+            st.query_params.clear()
+            return
 
     try:
         client_id = st.secrets["OURA_CLIENT_ID"]
@@ -54,13 +67,23 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
             client_secret=client_secret,
             redirect_uri=redirect_uri,
         )
-        oura.save_oauth_credentials(supabase, user_id, token_payload)
-
-        # Initial backfill
-        with st.spinner("Connected! Backfilling 30 days of Oura data…"):
-            oura.sync_oura(supabase, user_id, token_payload["access_token"], days_back=30)
-
-        st.success("Oura connected ✓")
+        # If we have a logged-in user, persist credentials and backfill
+        if user_id:
+            oura.save_oauth_credentials(supabase, user_id, token_payload)
+            with st.spinner("Connected! Backfilling 30 days of Oura data…"):
+                oura.sync_oura(supabase, user_id, token_payload["access_token"], days_back=30)
+            st.success("Oura connected ✓")
+            try:
+                supabase.table("oura_oauth_states").delete().eq("state", state).execute()
+            except Exception:
+                pass
+        else:
+            # No user present (rare). Store token_payload server-side so it can
+            # be associated once the user signs in.
+            try:
+                supabase.table("oura_oauth_states").update({"token_payload": token_payload}).eq("state", state).execute()
+            except Exception:
+                pass
     except oura.OuraError as e:
         st.error(f"Oura connection failed: {e}")
     finally:
@@ -184,40 +207,93 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
 
     # ─── OAuth flow ───
     with oauth_tab:
-        try:
-            client_id = st.secrets["OURA_CLIENT_ID"]
-            redirect_uri = st.secrets["OURA_REDIRECT_URI"]
-        except KeyError:
-            st.info(
-                "OAuth not configured yet. Add `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, "
-                "and `OURA_REDIRECT_URI` to `.streamlit/secrets.toml`. "
-                "Register your app at [cloud.ouraring.com/oauth/applications]"
+        client_id = st.secrets.get("OURA_CLIENT_ID")
+        client_secret = st.secrets.get("OURA_CLIENT_SECRET")
+        redirect_uri = st.secrets.get("OURA_REDIRECT_URI")
+
+        all_configured = bool(client_id and client_secret and redirect_uri)
+        missing = [
+            name for name, value in (
+                ("OURA_CLIENT_ID", client_id),
+                ("OURA_CLIENT_SECRET", client_secret),
+                ("OURA_REDIRECT_URI", redirect_uri),
+            ) if not value
+        ]
+
+        st.markdown(
+            "Connect Mirra to Oura using OAuth for a safer, sharable integration. "
+            "OAuth avoids manually pasting a PAT and supports refresh tokens."
+        )
+
+        if not all_configured:
+            st.warning("Oura OAuth is not fully configured yet.")
+            st.markdown("**Configure Oura OAuth in `.streamlit/secrets.toml` with these values:**")
+            for name, value in (
+                ("OURA_CLIENT_ID", client_id),
+                ("OURA_CLIENT_SECRET", client_secret),
+                ("OURA_REDIRECT_URI", redirect_uri),
+            ):
+                status = "✅ configured" if value else "❌ missing"
+                st.markdown(f"- `{name}` — {status}")
+
+            st.markdown(
+                "1. Register your app at [cloud.ouraring.com/oauth/applications]"
                 "(https://cloud.ouraring.com/oauth/applications)."
+            )
+            st.markdown(
+                "2. Add the values to `.streamlit/secrets.toml` or copy `.streamlit/secrets.example.toml`."
+            )
+            st.markdown(
+                "3. Make sure `OURA_REDIRECT_URI` matches the URL Oura sends you back to. "
+                "Commonly this is your deployed Streamlit app URL plus `/` or the exact path shown in the authorization flow."
+            )
+            st.code(
+                """OURA_CLIENT_ID = "your-oura-client-id"
+OURA_CLIENT_SECRET = "your-oura-client-secret"
+OURA_REDIRECT_URI = "https://your-deployed-app-url/""" , language="toml"
             )
             return
 
-        st.markdown(
-            "Click below to authorize Mirra to read your Oura data. "
-            "You'll be redirected back here when done."
+        st.success("Oura OAuth is configured. Click below to authorize Mirra.")
+        if not client_id or not redirect_uri:
+            st.error("Missing required OAuth values. Please update .streamlit/secrets.toml.")
+            return
+
+        state = secrets.token_urlsafe(24)
+        st.session_state["oura_oauth_state"] = state
+        try:
+            supabase.table("oura_oauth_states").upsert({
+                "state": state,
+                "user_id": None,
+            }).execute()
+        except Exception:
+            # If Supabase is unavailable locally, continue with client-side state only
+            pass
+        auth_url = oura.build_oauth_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
         )
 
-        # Generate fresh state nonce per click and stash in session
-        if st.button("Connect with Oura", type="primary", key="oura_oauth_connect"):
-            state = secrets.token_urlsafe(24)
-            st.session_state["oura_oauth_state"] = state
-            url = oura.build_oauth_authorize_url(
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                state=state,
-            )
-            # Streamlit can't redirect natively, so render a link the user clicks.
-            st.markdown(
-                f'<a href="{url}" target="_self" '
-                f'style="display:inline-block;margin-top:0.6rem;padding:0.6rem 1.2rem;'
-                f'background:#3dab7a;color:white;border-radius:8px;'
-                f'text-decoration:none;font-weight:600">Authorize on Oura →</a>',
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            "Click the button below to authorize Mirra with your Oura account. "
+            "When the Oura page appears, approve the app and return here."
+        )
+        st.markdown(
+            f'<a href="{auth_url}" target="_self" '
+            f'style="display:inline-block;margin-top:0.6rem;padding:0.8rem 1.4rem;'
+            f'background:#3dab7a;color:white;border-radius:10px;'
+            f'text-decoration:none;font-weight:700;">Authorize on Oura &rarr;</a>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "If the redirect does not return here automatically, refresh the page and try again. "
+            "The app will verify the returned OAuth state and complete the connection."
+        )
+        st.markdown(
+            f"Your configured redirect URI is: `{redirect_uri}`",
+            unsafe_allow_html=True,
+        )
 
 
 # ── Today-tab badges ──────────────────────────────────────────────────────────

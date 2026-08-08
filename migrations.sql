@@ -91,3 +91,19 @@ create policy "oura_credentials: update own"
 create policy "oura_credentials: delete own"
   on public.oura_credentials for delete
   using (auth.uid() = user_id);
+
+
+-- Temporary OAuth state store to survive login redirects. Stores the
+-- authorization `state` nonce and (optionally) token_payload after the
+-- code exchange so the app can finish association once the user signs in.
+create table if not exists public.oura_oauth_states (
+  state text primary key,
+  user_id uuid references auth.users(id),
+  token_payload jsonb,
+  created_at timestamptz default now()
+);
+
+alter table public.oura_oauth_states enable row level security;
+drop policy if exists "oura_oauth_states: insert" on public.oura_oauth_states;
+create policy "oura_oauth_states: insert" on public.oura_oauth_states for insert
+  with check (true);
