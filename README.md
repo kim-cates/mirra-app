@@ -53,6 +53,24 @@ OURA_CLIENT_SECRET = "your-oura-client-secret"
 OURA_REDIRECT_URI = "https://your-deployed-app-url/"
 ```
 
+### 3. Oura OAuth setup
+
+1. Register your app on Oura:
+   - https://cloud.ouraring.com/oauth/applications
+2. Configure the redirect URI exactly as Oura requires. Usually this is your deployed app URL.
+3. Add `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, and `OURA_REDIRECT_URI` to `.streamlit/secrets.toml`.
+4. Run Mirra and use the `Settings` → `OAuth (recommended for shared use)` tab.
+5. Click **Authorize on Oura →**, approve access, and return to Mirra.
+
+If OAuth is not configured, the app will show which value is missing and a sample config block.
+
+### 4. Install & run
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
 ### 3. Install & run
 
 ```bash
