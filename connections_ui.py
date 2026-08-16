@@ -93,6 +93,9 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
     except ProviderError as e:
         st.error(f"Couldn't connect {provider_key.title()}: {e}")
     finally:
+        # The nonce is spent (single-use); drop the cached copy so the next
+        # render mints a fresh one for Reconnect.
+        st.session_state.pop(f"_oauth_nonce_{provider_key}", None)
         st.query_params.clear()
 
 
@@ -171,3 +174,64 @@ def _disconnect(supabase, user_id: str, provider_key: str) -> None:
         pass  # best-effort revoke; we drop the local credential regardless
     token_store.delete_connection(supabase, user_id, provider_key)
     st.rerun()
+
+
+# ── Adapter for the existing Connections tab in app.py ───────────────────────
+# app.py renders a list of {name, description, status, action_url, action_label}
+# cards. This returns that dict for any registered provider, so a card can be
+# swapped from a "Coming soon" placeholder to a live connection with one call.
+#
+# It NEVER raises: if secrets are missing or the `connections`/`oauth_states`
+# tables aren't migrated yet, the card degrades to "Not configured" rather than
+# taking the whole tab down. That matters because this ships before the
+# migration is applied.
+def provider_card(supabase, user_id: str, provider_key: str, *,
+                  description: str = "") -> dict:
+    """Build one app-card dict for `provider_key`, degrading safely on error."""
+    meta = registry.meta_for(provider_key)
+    card = {
+        "name": meta.label,
+        "description": description or f"Connect {meta.label}.",
+        "status": "Not configured",
+        "action_url": None,
+        "action_label": "Connect",
+    }
+
+    if not st.secrets.get(f"{provider_key.upper()}_CLIENT_ID"):
+        return card  # no credentials yet → stays a placeholder
+
+    db = _db(supabase)
+    try:
+        connected = token_store.connection_state(db, user_id, provider_key)
+    except Exception:
+        # Table not migrated yet — surface the setup gap without breaking the tab.
+        card["status"] = "Setup required"
+        return card
+
+    # Streamlit re-runs this on every interaction, so reuse one nonce per session
+    # instead of writing a fresh row each render. A lost session just mints a new
+    # one; the orphan expires (10 min TTL) and gets swept.
+    sess_key = f"_oauth_nonce_{provider_key}"
+    try:
+        provider = _build(provider_key)
+        nonce = st.session_state.get(sess_key)
+        if not nonce:
+            oauth_state.sweep(db)
+            nonce = oauth_state.issue(db, provider=provider_key, user_id=user_id)
+            st.session_state[sess_key] = nonce
+        card["action_url"] = provider.authorize_url(state=f"{provider_key}:{nonce}")
+    except ProviderError:
+        return card
+    except Exception:
+        card["status"] = "Setup required"
+        return card
+
+    if connected == ConnectionState.CONNECTED:
+        card["status"] = "Connected"
+        card["action_label"] = "Reconnect"
+    elif connected == ConnectionState.NEEDS_REAUTH:
+        card["status"] = "Needs reauth"
+        card["action_label"] = "Reconnect"
+    else:
+        card["status"] = "Ready to connect"
+    return card
