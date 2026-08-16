@@ -95,7 +95,7 @@ create policy "oura_credentials: delete own"
 
 -- ──────────────────────────────────────────────────────────────────────────
 --  MIR-1: Expand user profile data  (story #14, sub-issue #15)
---  Run in the Supabase SQL editor. DRAFT — not yet applied (awaiting creds).
+--  Run in the Supabase SQL editor.
 --
 --  ⚠ DECISION NEEDED (Kim): the story says "profiles" table, but the app today
 --  authenticates against the custom public.users table (auth.py) and reads
@@ -116,7 +116,19 @@ alter table public.users
   add column if not exists gender_identity  text,
   add column if not exists location         text,
   add column if not exists timezone         text  default 'Pacific/Honolulu',
-  add column if not exists occupation       text;
+  add column if not exists occupation       text,
+
+  -- ── Onboarding state ────────────────────────────────────────────────────
+  -- Without these the onboarding screens have nowhere to record "done", so
+  -- every sign-in replays intro → profile → inquiry. Every profile field is
+  -- optional, so completion cannot be inferred from the data itself —
+  -- it needs explicit markers.
+  add column if not exists has_seen_intro        boolean     default false,
+  add column if not exists profile_completed_at  timestamptz,
+  add column if not exists inquiry_completed_at  timestamptz,
+  -- INTERIM: inquiry answers as jsonb until the goals schema (#20) lands;
+  -- backfill into user_goals and drop this column once #20 is decided.
+  add column if not exists inquiry_responses     jsonb;
 
 -- Case-insensitive uniqueness on email, but only when an email is present
 -- (fields are optional, so NULL/empty emails must not collide).
