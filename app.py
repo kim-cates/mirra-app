@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 
 import oura
 import oura_ui
+import connections_ui  # MIR-3: provider framework (Spotify, Whoop, …)
 from oura import user_today
 from auth import render_login_page, render_logout_button
 from intro_page import render_intro_page, user_has_seen_intro
@@ -1747,7 +1748,13 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
         },
         {"name": "Whoop", "description": "Coming soon: connect Whoop for recovery and strain insights.", "status": "Not configured", "action_url": None},
         {"name": "Strava", "description": "Coming soon: connect Strava to sync workouts and training data.", "status": "Not configured", "action_url": None},
-        {"name": "Spotify", "description": "Coming soon: connect Spotify for listening and mood correlations.", "status": "Not configured", "action_url": None},
+        # MIR-3: live Spotify connection via the provider framework. Falls back to
+        # a "Not configured" card if secrets or the connections tables are missing,
+        # so this card can never break the tab.
+        connections_ui.provider_card(
+            supabase, user_id, "spotify",
+            description="Connect Spotify for listening and mood correlations.",
+        ),
     ]
 
     for app in apps:
@@ -3743,6 +3750,10 @@ def render_daily_reflection_tab(rows):
 
 # ── App entry point: dispatch tabs ──────────────────────────────────────────
 user_id = st.session_state["user_id"]
+# MIR-3 callback runs first, but only claims states shaped "<provider>:<nonce>"
+# (Spotify, Whoop, …). Oura's plain-nonce state falls through to its own handler
+# below untouched.
+connections_ui.handle_oauth_callback(supabase, user_id)
 oura_ui.handle_oauth_callback(supabase, user_id)
 rows = load_all_entries(user_id)
 
