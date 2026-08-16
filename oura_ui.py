@@ -82,14 +82,17 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
 
 
 # ── Settings tab ──────────────────────────────────────────────────────────────
-def render_settings_tab(supabase, user_id: str) -> None:
-    st.markdown('<p class="title-text">Settings</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">'
-        'Connect external data sources to enrich your reflections.'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+def render_settings_tab(supabase, user_id: str, show_header: bool = True) -> None:
+    # show_header=False when this renders inside the Profile tab's Connections
+    # section, which already carries the page title and intro copy.
+    if show_header:
+        st.markdown('<p class="title-text">Settings</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">'
+            'Connect external data sources to enrich your reflections.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown('<div class="section-label">Oura Ring</div>', unsafe_allow_html=True)
 

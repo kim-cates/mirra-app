@@ -6,16 +6,22 @@ criteria): **Contact** (email, phone, location, timezone) and **About You**
 nothing here blocks account creation. Inline validation uses the pure
 helpers from validation.py (#17).
 
-Storage: values are collected into a plain dict and handed to
-``save_profile``. Until the #15 migration is applied (waiting on Supabase
-creds + the profiles-vs-users decision), the seam stores values in
-``st.session_state`` — swapping in the Supabase upsert is the only change
-needed later. The same form serves both the Create User page (mode="create")
-and Profile Settings (mode="edit", #18).
+Storage: the `users` table (see the MIR-1 block in migrations.sql). Values
+live in the profile columns; `users.profile_completed_at` is the marker that
+tells the onboarding chain the user is past this screen — without it, every
+sign-in would replay onboarding, because all fields being optional means
+"done" can't be inferred from the data itself.
+
+If the migration hasn't been applied to a given Supabase project yet, reads
+and writes degrade to session state so the flow still works — but the UI
+says so instead of pretending the save was durable.
+
+The same form serves both onboarding (mode="create") and the Profile tab
+(mode="edit", #18).
 """
 
 import zoneinfo
-from datetime import date
+from datetime import date, datetime, timezone as _tz
 
 import streamlit as st
 
@@ -32,7 +38,10 @@ PROFILE_GROUPS = {
     "About You": ["date_of_birth", "sex", "gender_identity", "occupation"],
 }
 
+PROFILE_COLUMNS = [f for fields in PROFILE_GROUPS.values() for f in fields]
+
 _STATE_KEY = "profile_values"
+_SEEDED_KEY = "profile_widgets_seeded"
 
 
 def _timezones() -> list[str]:
@@ -72,29 +81,127 @@ def validate_profile() -> dict[str, str]:
     return errors
 
 
-def user_has_completed_profile(user_id: str) -> bool:
-    """True once the user saved the onboarding profile (session-scoped for
-    now; will read from the users table once the #15 migration lands)."""
-    return _STATE_KEY in st.session_state
+# ── Storage ───────────────────────────────────────────────────────────────────
+def load_profile(supabase, user_id: str) -> dict:
+    """Read the user's saved profile columns. {} pre-migration or on error."""
+    if supabase is None:
+        return dict(st.session_state.get(_STATE_KEY) or {})
+    try:
+        res = (supabase.table("users")
+               .select(",".join(PROFILE_COLUMNS))
+               .eq("id", user_id).limit(1).execute())
+        if res.data:
+            return {k: v for k, v in res.data[0].items() if v}
+    except Exception:
+        pass  # pre-migration — fall back to whatever this session holds
+    return dict(st.session_state.get(_STATE_KEY) or {})
 
 
-def save_profile(supabase, user_id: str, values: dict) -> None:
-    """Persist profile values.
+def user_has_completed_profile(supabase, user_id: str) -> bool:
+    """True once the user saved (or skipped) the onboarding profile.
 
-    DB seam (#15): becomes a Supabase update on the users table once the
-    migration is applied; session-backed until then so the flow already works.
+    Reads users.profile_completed_at; falls back to session state while the
+    column doesn't exist yet, so the flow still works pre-migration.
+    """
+    if st.session_state.get(_STATE_KEY) is not None:
+        return True
+    if supabase is not None:
+        try:
+            res = (supabase.table("users").select("profile_completed_at")
+                   .eq("id", user_id).limit(1).execute())
+            if res.data and res.data[0].get("profile_completed_at"):
+                st.session_state[_STATE_KEY] = {}
+                return True
+        except Exception:
+            pass  # column not migrated yet — session gate only
+    return False
+
+
+def save_profile(supabase, user_id: str, values: dict) -> tuple[bool, str]:
+    """Persist profile values + the completion marker.
+
+    Returns (persisted_to_db, message). A False means the values are only in
+    session state (migration not applied, or the write was rejected) — the
+    caller surfaces that instead of claiming a durable save.
     """
     st.session_state[_STATE_KEY] = values
+    if supabase is None:
+        return False, "No database connection — saved for this session only."
+
+    # Blank out cleared fields explicitly: collect_profile() drops empty
+    # values, so without this a field the user erased would keep its old
+    # value in the database.
+    payload = {col: values.get(col) for col in PROFILE_COLUMNS}
+    payload["profile_completed_at"] = datetime.now(_tz.utc).isoformat()
+    try:
+        supabase.table("users").update(payload).eq("id", user_id).execute()
+        return True, ""
+    except Exception as exc:
+        detail = str(exc)
+        if "idx_users_email" in detail or "duplicate key" in detail or "23505" in detail:
+            return False, "That email is already used by another account."
+        # PostgREST reports unknown columns as PGRST204 ("could not find the
+        # 'x' column ... in the schema cache"); Postgres itself as 42703.
+        if "PGRST204" in detail or "42703" in detail or "schema cache" in detail:
+            return False, ("Saved for this session only — the profile columns "
+                           "aren't in this database yet (see migrations.sql).")
+        return False, "Couldn't reach the database — saved for this session only."
 
 
+def mark_profile_completed(supabase, user_id: str) -> None:
+    """Record that the user passed the onboarding profile screen (e.g. skipped)."""
+    st.session_state.setdefault(_STATE_KEY, {})
+    if supabase is None:
+        return
+    try:
+        supabase.table("users").update(
+            {"profile_completed_at": datetime.now(_tz.utc).isoformat()}
+        ).eq("id", user_id).execute()
+    except Exception:
+        pass  # pre-migration — session marker above keeps the gate closed
+
+
+def seed_widget_state(supabase, user_id: str, force: bool = False) -> None:
+    """Prefill the form widgets from the saved profile, once per session.
+
+    Streamlit widgets keep their value in session_state under their key, so
+    seeding has to happen before the widgets are created — otherwise the edit
+    form would open empty for a returning user.
+    """
+    if st.session_state.get(_SEEDED_KEY) and not force:
+        return
+    profile = load_profile(supabase, user_id)
+    st.session_state[_SEEDED_KEY] = True
+
+    st.session_state.setdefault("profile_email", profile.get("email") or "")
+    st.session_state.setdefault("profile_phone", profile.get("phone") or "")
+    st.session_state.setdefault("profile_location", profile.get("location") or "")
+    st.session_state.setdefault("profile_timezone", profile.get("timezone") or DEFAULT_TIMEZONE)
+    st.session_state.setdefault("profile_gender_identity", profile.get("gender_identity") or "")
+    st.session_state.setdefault("profile_occupation", profile.get("occupation") or "")
+
+    sex = profile.get("sex")
+    st.session_state.setdefault("profile_sex", sex if sex in SEX_OPTIONS else SEX_OPTIONS[0])
+
+    dob = profile.get("date_of_birth")
+    if isinstance(dob, str):
+        try:
+            dob = date.fromisoformat(dob)
+        except ValueError:
+            dob = None
+    st.session_state.setdefault("profile_date_of_birth", dob if isinstance(dob, date) else None)
+
+
+# ── Renderer ──────────────────────────────────────────────────────────────────
 def render_profile_form(supabase, user_id: str, mode: str = "create") -> None:
     """Render the grouped profile form. mode: "create" | "edit" (#18)."""
+    seed_widget_state(supabase, user_id)
+
     if mode == "create":
         st.markdown("### A little about you")
         st.caption("All of this is optional — fill in what you're comfortable with. "
-                   "You can add or change everything later in Profile Settings.")
+                   "You can add or change everything later in your Profile tab.")
     else:
-        st.markdown("### Profile Settings")
         st.caption("Update your details anytime. All fields are optional.")
 
     errors = validate_profile()
@@ -123,7 +230,7 @@ def render_profile_form(supabase, user_id: str, mode: str = "create") -> None:
         st.markdown("**About You**")
         col1, col2 = st.columns(2)
         with col1:
-            st.date_input("Date of birth", key="profile_date_of_birth", value=None,
+            st.date_input("Date of birth", key="profile_date_of_birth",
                           min_value=date(1900, 1, 1), max_value=date.today(),
                           format="MM/DD/YYYY")
         with col2:
@@ -136,11 +243,31 @@ def render_profile_form(supabase, user_id: str, mode: str = "create") -> None:
             st.text_input("Occupation", key="profile_occupation",
                           placeholder="What do you do?")
 
-    label = "Save profile" if mode == "edit" else "Continue"
-    if st.button(label, type="primary", use_container_width=True):
-        if errors:
-            st.error("Please fix the highlighted fields before saving.")
-        else:
-            save_profile(supabase, user_id, collect_profile())
-            st.success("Profile saved.")
+    if mode == "edit":
+        if st.button("Save changes", type="primary", use_container_width=True):
+            if errors:
+                st.error("Please fix the highlighted fields before saving.")
+            else:
+                ok, message = save_profile(supabase, user_id, collect_profile())
+                if ok:
+                    st.success("Profile saved.")
+                else:
+                    st.warning(message)
+        return
+
+    # Onboarding: saving continues the chain, and skipping still closes the
+    # gate — a returning user must never be trapped behind an optional form.
+    save_col, skip_col = st.columns([3, 1])
+    with save_col:
+        if st.button("Continue", type="primary", use_container_width=True):
+            if errors:
+                st.error("Please fix the highlighted fields before saving.")
+            else:
+                ok, message = save_profile(supabase, user_id, collect_profile())
+                if not ok:
+                    st.warning(message)
+                st.rerun()
+    with skip_col:
+        if st.button("Skip for now", use_container_width=True):
+            mark_profile_completed(supabase, user_id)
             st.rerun()
