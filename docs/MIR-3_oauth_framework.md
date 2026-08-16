@@ -21,11 +21,16 @@ providers/
   registry.py     @register decorator · build_from_secrets() · configured_keys()
   __init__.py     imports providers for side-effect registration (display order)
   (oura.py)       OuraProvider — #26, OWNED BY KIM (o-auth-testing), not shipped here
-  spotify.py      SpotifyProvider — real handshake, sync() skeleton           (#28)
+  spotify.py      SpotifyProvider — full cycle: handshake + real sync()      (#28)
+  _template.py    copy-paste starter for the next app (Strava, Fitbit…)
   whoop.py        WhoopProvider — real handshake, sync() skeleton   (3rd)
   crypto.py       Fernet encrypt/decrypt for tokens at rest                   (#27)
   token_store.py  connections table CRUD · get_valid_token() refresh seam     (#27)
 connections_ui.py Connections page + CSRF-safe generalized callback           (#29)
+tests/test_providers.py     11 offline tests — registry, TTL, CSRF state, errors
+tests/test_spotify_sync.py   7 offline tests — recently-played → per-day rows
+examples/demo_spotify_cycle.py  runnable e2e (mock Spotify + in-memory DB)
+docs/migrations/MIR-3_connections.sql  ready-to-run DDL (public.users)
 docs/MIR-3_oauth_framework.md   ← this file
 ```
 
@@ -112,15 +117,34 @@ it.
   refreshes within a 5-min skew, persists the new bundle, and flags
   `NEEDS_REAUTH` if refresh fails — no user action on the happy path.
 
-### Proposed DDL — DRAFT, **not applied** (needs Kim + identity decision)
+### Identity decision — resolved from code: **`public.users`**
 
-⚠ Depends on the unresolved **identity question** (custom `public.users` vs
-`auth.users`; see `migrations.sql` MIR-1 note). The `oura_*` tables FK to
-`auth.users` with `auth.uid()` RLS, but the app authenticates against
-`public.users` with no Supabase Auth session. **`connections` must key on
-whichever identity we standardize on** — decide before applying. DDL below shown
-against `auth.users` to match the existing `oura_*` pattern; swap the FK +
-policies if we go with `public.users`.
+The question "auth.users vs public.users" is answered by how the app actually
+runs, not by the schema declaration:
+
+- `auth.py` sets `st.session_state["user_id"] = users.id` from the **custom
+  `public.users` table** on sign-in/sign-up. There is **no Supabase Auth
+  session** anywhere in the app.
+- `migrations.sql` declares `oura_credentials`/`oura_daily`/`oura_oauth_states`
+  against `auth.users` with `auth.uid()` RLS — but the app writes `public.users`
+  ids into them. Since Oura works in production, that FK/RLS is not what's
+  actually enforced. Kim's `o-auth-testing` branch does not change
+  `migrations.sql`/`oura.py`/`auth.py`, so she is on the same runtime identity.
+
+⇒ **`connections` and `spotify_daily` key on `public.users(id)`**, exactly the
+identity Oura credentials really use today. This keeps Oura and Spotify tokens
+stored the same way and avoids a second identity pattern.
+
+**RLS:** not enabled with `auth.uid()` — it would be `null` and lock the app out.
+App-level scoping for now (same as `public.users` today). Known, documented gap
+to tighten before public launch (belongs to the identity/auth hardening story,
+not MIR-3). Flag to Kim as FYI, no action needed.
+
+**Ready-to-run migration:** [`docs/migrations/MIR-3_connections.sql`](migrations/MIR-3_connections.sql)
+(connections + spotify_daily + commented Oura backfill). Apply via the Supabase
+SQL editor, then mirror into `migrations.sql`.
+
+<details><summary>Original auth.users variant (kept for reference if identity later moves to Supabase Auth)</summary>
 
 ```sql
 -- Multi-provider credential store (generalizes oura_credentials)
@@ -148,22 +172,28 @@ create policy "connections: update own" on public.connections
 create policy "connections: delete own" on public.connections
   for delete using (auth.uid() = user_id);
 
--- Per-provider daily rows follow the oura_daily shape:
--- spotify_daily(user_id, entry_date, valence, energy, tempo, track_count, raw, fetched_at)
 -- whoop_daily(user_id, entry_date, recovery_score, hrv_avg, resting_hr, sleep_performance, raw, fetched_at)
 ```
+</details>
 
-**If we standardize on `public.users` instead** (current custom-auth model), swap
-two things and drop the `auth.uid()` RLS (which assumes a Supabase Auth session
-the app doesn't have today):
+### Spotify data model — reality check (#28)
 
-```sql
---   user_id  uuid ... references public.users(id) on delete cascade
--- RLS: either leave disabled to match the existing public.users tables, or add
--- app-enforced scoping — do NOT use auth.uid() (it's null under custom auth).
-```
+The spec wanted **valence / energy / tempo** (Spotify `/audio-features`).
+**Spotify restricted `/audio-features` (+ audio-analysis, recommendations) for
+apps created after 2024‑11‑27** — a new Mirra app very likely won't get it. So:
 
-Both variants are ready; picking one is the identity decision below.
+- **Reliable baseline** (only needs `user-read-recently-played`): per-local-day
+  `track_count`, `unique_artists`, `listening_ms` from `/me/player/recently-played`.
+- **Audio features are opportunistic**: fetched if the app has access, otherwise
+  degrade to `NULL` (columns are nullable). No crash, no fake numbers.
+- **History caveat:** `recently-played` returns ≤ ~50 plays — `days_back` is
+  best-effort, not a backfill. Signal accumulates through regular syncs.
+- Attribution to the user's **local calendar day** (HST default), matching the
+  Oura convention so rows join cleanly on `entry_date`.
+
+Verified end-to-end offline in `examples/demo_spotify_cycle.py`
+(connect → encrypted store → validate → sync → auto-refresh → needs-reauth →
+disconnect) and unit-tested in `tests/test_spotify_sync.py`.
 
 ### Migration path (zero downtime)
 
@@ -183,21 +213,32 @@ saves encrypted tokens, and backfills 30 days.
 
 ## 8. Scope of THIS branch
 
-**Done (design + skeleton):** interface, registry, Spotify + Whoop handshakes,
-crypto, token store + refresh seam, Connections UI, this doc.
+**Done:** interface, registry, crypto, token store + auto-refresh, Connections
+UI, **Spotify full cycle** (handshake + real `sync()` + tests + runnable e2e
+demo), Whoop handshake, `_template.py` + recipe, ready-to-run migration SQL,
+`cryptography` dep, this doc.
 
 **Kim's lane (excluded here):** #24 (parent) and #26 (Oura onto the interface)
 are assigned to Kim, active on `o-auth-testing`. My branch stays in #25 / #27 /
-#28 / #29 to avoid collision.
+#28 / #29 to avoid collision. Her files (`oura.py`, `oura_ui.py`) untouched.
 
-**Deferred (need DB / secrets / Kim review):** apply `connections` migration;
-implement `spotify_daily` / `whoop_daily` sync; add `cryptography` to
-`requirements.txt`; provision Spotify/Whoop client apps; wire
-`connections_ui` into `app.py`; delete legacy `oura_ui` settings path.
+**Go-live checklist (Igor, once Kim reviews):**
+1. Create the Spotify app at developer.spotify.com → redirect URI = app callback.
+2. Secrets: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `OAUTH_REDIRECT_URI`,
+   `TOKEN_ENC_KEY` (Fernet key, generate once, never in chat/git).
+3. Apply `docs/migrations/MIR-3_connections.sql` in Supabase → mirror into `migrations.sql`.
+4. Wire `connections_ui.handle_oauth_callback` + `render_connections_page` into `app.py`.
+5. Test with a real Spotify account; confirm `spotify_daily` rows land.
 
-## 9. Open decisions for Kim
+**Still deferred:** Whoop `sync()` + `whoop_daily`; register Oura when Kim's #26
+lands (one import line); retire legacy `oura_ui` settings path.
 
-1. **Identity** — `auth.users` vs `public.users` for `connections` (blocks RLS).
-2. **`TOKEN_ENC_KEY`** — generate once, store in Streamlit secrets; rotation policy?
-3. **Connector priority after Spotify** — Whoop assumed here; confirm.
+## 9. For Kim — FYI / decisions
+
+1. ✅ **Identity — resolved from code** (`public.users`, see §6). FYI only: the
+   `auth.users` FK/RLS declared in `migrations.sql` doesn't match runtime;
+   reconcile before public launch, not an MVP blocker.
+2. **`TOKEN_ENC_KEY`** — one Fernet key in Streamlit secrets; rotation policy later.
+3. **Connector priority after Spotify** — Whoop assumed; confirm.
 4. Keep Oura **PAT** path, or OAuth-only once OAF is seamless?
+5. **Review + merge PR #46** when ready — you own `main`.
