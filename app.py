@@ -229,7 +229,25 @@ textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 
 # ── Clients ───────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_supabase():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    try:
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+        client = create_client(url, key)
+        # quick connectivity check (non-destructive)
+        try:
+            client.table("users").select("id").limit(1).execute()
+        except Exception:
+            import logging
+            logging.exception("Supabase connectivity check failed")
+            # Surface a concise message in the Streamlit UI and re-raise
+            st.error("Unable to reach Supabase. Check `SUPABASE_URL`, `SUPABASE_KEY`, and network egress.")
+            raise
+        return client
+    except Exception:
+        import logging
+        logging.exception("Supabase client initialization failed")
+        st.error("Supabase initialization failed — see logs for details.")
+        raise
 
 @st.cache_resource
 def get_anthropic():
@@ -1688,6 +1706,24 @@ def render_connections_tab(supabase, user_id: str) -> None:
             redirect_uri=oura_redirect_uri,
             state=state,
         )
+
+    # --- Debug helper (temporary) ------------------------------------------------
+    try:
+        if st.checkbox("Show Oura debug info (developer only)", key="oura_debug"):
+            st.markdown("**Oura debug**")
+            st.write("session_state['oura_oauth_state']:", st.session_state.get("oura_oauth_state"))
+            st.write("OURA_CLIENT_ID present:", bool(oura_client_id))
+            st.write("OURA_REDIRECT_URI present:", bool(oura_redirect_uri))
+            try:
+                rows = supabase.table("oura_oauth_states").select("*").eq("user_id", user_id).execute()
+                st.write("DB: oura_oauth_states rows for this user:", rows.data if getattr(rows, 'data', None) is not None else rows)
+            except Exception as e:
+                st.write("DB query failed:", e)
+            # Show the authorize URL so you can copy/paste it to inspect redirect errors
+            if oura_action_url:
+                st.write("Authorize URL:", oura_action_url)
+    except Exception:
+        pass
 
     oura_creds_res = supabase.table("oura_credentials").select("user_id").eq("user_id", user_id).execute()
     oura_connected = bool(oura_creds_res.data)
