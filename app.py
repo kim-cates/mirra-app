@@ -181,6 +181,124 @@ textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 
     border-radius: 8px; padding: 0.9rem 1.2rem; color: #6a5520; font-size: 0.92rem; margin-top: 1rem;
 }
 
+/* ── Native Streamlit widgets ──────────────────────────────────────────────
+   Everything above styles our own markup. These rules cover the widgets
+   Streamlit renders itself — buttons, multiselect, slider read-outs, the tab
+   underline — which until now took whatever theme Streamlit resolved at
+   runtime. When that resolved to the default (or to dark, on a dark-mode
+   machine) they came out near-black with a red accent on our cream page,
+   while the `color: #2a2a2a` rule at the top kept their labels dark: black
+   button with black text, unreadable feelings picker. Pinning them to the
+   palette here means the UI stays legible even if the theme file goes
+   missing again. Colors mirror .streamlit/config.toml. */
+
+/* Buttons — secondary (the default) is a quiet white pill; primary is sage. */
+.stButton > button,
+.stFormSubmitButton > button,
+[data-testid="stBaseButton-secondary"] {
+    background-color: #ffffff !important; color: #2a2a2a !important;
+    border: 1px solid #ece9df !important; border-radius: 10px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.92rem !important; font-weight: 500 !important;
+    padding: 0.45rem 1.1rem !important; box-shadow: none !important;
+    transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease !important;
+}
+.stButton > button:hover,
+.stFormSubmitButton > button:hover,
+[data-testid="stBaseButton-secondary"]:hover {
+    background-color: #f7fbf9 !important; border-color: #3dab7a !important; color: #2a8a5e !important;
+}
+.stButton > button[kind="primary"],
+.stFormSubmitButton > button[kind="primary"],
+[data-testid="stBaseButton-primary"] {
+    background-color: #3dab7a !important; color: #ffffff !important;
+    border: 1px solid #3dab7a !important;
+}
+.stButton > button[kind="primary"]:hover,
+.stFormSubmitButton > button[kind="primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {
+    background-color: #349168 !important; border-color: #349168 !important; color: #ffffff !important;
+}
+.stButton > button:focus-visible,
+.stFormSubmitButton > button:focus-visible {
+    outline: none !important; box-shadow: 0 0 0 3px rgba(61,171,122,0.18) !important;
+}
+.stButton > button:disabled, .stButton > button:disabled:hover {
+    background-color: #f5f4ee !important; color: #b5b1a6 !important;
+    border-color: #ece9df !important; cursor: not-allowed !important;
+}
+
+/* Multiselect / selectbox — white field, sage-tinted tags matching .kw-chip.
+   Streamlit 1.61 rewrote these widgets from baseweb to react-aria, so the
+   old `[data-baseweb="select"]` / `[data-baseweb="tag"]` hooks match nothing
+   here; the live markup is `.react-aria-ComboBox` with `span[data-tag]`.
+   The emotion class names next to them (st-emotion-cache-*) are generated
+   per build and must never be selected on. */
+[data-testid="stMultiSelect"] div[role="group"],
+[data-testid="stSelectbox"] div[role="group"] {
+    background-color: #ffffff !important; color: #2a2a2a !important;
+    border: 1px solid #ece9df !important; border-radius: 10px !important;
+    box-shadow: none !important;
+}
+[data-testid="stMultiSelect"] div[role="group"]:focus-within,
+[data-testid="stSelectbox"] div[role="group"]:focus-within {
+    border-color: #3dab7a !important; box-shadow: 0 0 0 3px rgba(61,171,122,0.08) !important;
+}
+/* The combobox's own input sits inside that field — the generic `input`
+   rule at the top of this stylesheet would otherwise paint a second white
+   bordered box inside the field. */
+[data-testid="stMultiSelect"] input, [data-testid="stSelectbox"] input {
+    background-color: transparent !important; border: none !important;
+    border-radius: 0 !important; box-shadow: none !important;
+}
+[data-testid="stMultiSelectTagsContainer"] span[data-tag] {
+    background-color: #e8f5f0 !important; color: #2a7a55 !important;
+    border: 1px solid #c9e4d6 !important; border-radius: 999px !important;
+    font-size: 0.82rem !important; font-weight: 500 !important;
+}
+[data-testid="stMultiSelectTagsContainer"] span[data-tag] span,
+[data-testid="stMultiSelectTagsContainer"] span[data-tag] button,
+[data-testid="stMultiSelectTagsContainer"] span[data-tag] svg {
+    color: #2a7a55 !important; fill: #2a7a55 !important; background: transparent !important;
+}
+/* Dropdown panel — rendered in a portal outside .stApp, so it needs its own
+   background or it inherits the browser default (white-on-white text). */
+.react-aria-Popover, [data-baseweb="popover"] [role="listbox"], [data-baseweb="menu"] {
+    background-color: #ffffff !important; color: #2a2a2a !important;
+    border: 1px solid #ece9df !important; border-radius: 10px !important;
+}
+[role="option"]:hover, [role="option"][aria-selected="true"],
+[data-baseweb="menu"] li:hover, [data-baseweb="menu"] li[aria-selected="true"] {
+    background-color: #f0f8f4 !important; color: #1e6b45 !important;
+}
+::placeholder { color: #a9a49a !important; opacity: 1 !important; }
+
+/* Checkbox / radio labels — the box itself comes from the theme's primary. */
+[data-testid="stCheckbox"] label, [data-testid="stRadio"] label {
+    color: #2a2a2a !important; font-size: 0.9rem !important;
+}
+
+/* Slider read-outs — the floating thumb value ships as a filled accent badge,
+   i.e. sage text on a sage chip directly above the sage track: unreadable.
+   Streamlit's emotion styles are injected after this stylesheet, so an equal
+   specificity selector loses even with !important — hence the extra
+   [data-testid="stSlider"] ancestor. Don't extend this to the badge's parent:
+   that element is the draggable thumb itself, and clearing its background
+   makes the knob disappear from the track. */
+[data-testid="stSlider"] [data-testid="stSliderThumbValue"] {
+    background: transparent !important; color: #2a8a5e !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.8rem !important; font-weight: 600 !important;
+}
+[data-testid="stSlider"] [data-testid="stSliderTickBar"] {
+    background: transparent !important; color: #b5b1a6 !important; font-size: 0.75rem !important;
+}
+
+/* Tabs: the moving underline is a separate element from the tab's own
+   border-bottom, so it kept the default red even with the rule above. */
+.stTabs [data-baseweb="tab-highlight"] { background-color: #3dab7a !important; }
+.stTabs [data-baseweb="tab-border"] { background-color: #ece9df !important; }
+
 /* ── Mobile breakpoints ────────────────────────────────────────────────────
    Streamlit's st.columns doesn't auto-stack on mobile, but our custom HTML
    grids (.stat-grid, the Oura badge row in oura_ui.py, the weekly insights
