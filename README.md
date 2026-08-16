@@ -6,6 +6,7 @@ A Streamlit app for daily journaling with AI-powered thematic analysis, biometri
 
 - Miro board: https://miro.com/app/board/uXjVHzho-kY=/
 - GitHub Project board: https://github.com/users/kim-cates/projects/2/views/1
+- Mirra app via Streamlit: https://mirra-reflections.streamlit.app/
 - Story backlog source: `stories.yml`
 
 
