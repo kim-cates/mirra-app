@@ -2,6 +2,7 @@ import streamlit as st
 import anthropic
 import base64
 import hashlib
+import secrets
 from supabase import create_client
 from datetime import date, datetime, timedelta
 import json
@@ -10,7 +11,6 @@ import plotly.graph_objects as go
 
 import oura
 import oura_ui
-import connections_ui  # MIR-3: provider-agnostic Connections page + OAuth callback
 from oura import user_today
 from intro_page import render_intro_page, user_has_seen_intro
 from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
@@ -229,7 +229,25 @@ textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 
 # ── Clients ───────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_supabase():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    try:
+        url = st.secrets.get("SUPABASE_URL")
+        key = st.secrets.get("SUPABASE_KEY")
+        client = create_client(url, key)
+        # quick connectivity check (non-destructive)
+        try:
+            client.table("users").select("id").limit(1).execute()
+        except Exception:
+            import logging
+            logging.exception("Supabase connectivity check failed")
+            # Surface a concise message in the Streamlit UI and re-raise
+            st.error("Unable to reach Supabase. Check `SUPABASE_URL`, `SUPABASE_KEY`, and network egress.")
+            raise
+        return client
+    except Exception:
+        import logging
+        logging.exception("Supabase client initialization failed")
+        st.error("Supabase initialization failed — see logs for details.")
+        raise
 
 @st.cache_resource
 def get_anthropic():
@@ -1654,6 +1672,115 @@ def get_top_similar_phrases(query: str, phrases: list[str], top_n: int = 25) -> 
     similarities.sort(key=lambda x: x[1], reverse=True)
     
     return [p for p, _ in similarities[:top_n]]
+
+
+def render_connections_tab(supabase, user_id: str) -> None:
+    st.markdown('<p class="title-text">Connections</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">'
+        'Connect external health and wellness apps to Mirra. More integrations coming soon.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    oura_action_url = None
+    oura_client_id = st.secrets.get("OURA_CLIENT_ID")
+    oura_client_secret = st.secrets.get("OURA_CLIENT_SECRET")
+    oura_redirect_uri = st.secrets.get("OURA_REDIRECT_URI")
+    if oura_client_id and oura_client_secret and oura_redirect_uri:
+        if not st.session_state.get("oura_oauth_state"):
+            state = secrets.token_urlsafe(24)
+            st.session_state["oura_oauth_state"] = state
+            try:
+                supabase.table("oura_oauth_states").upsert({
+                    "state": state,
+                    "user_id": user_id,
+                }).execute()
+            except Exception:
+                pass
+        else:
+            state = st.session_state["oura_oauth_state"]
+
+        oura_action_url = oura.build_oauth_authorize_url(
+            client_id=oura_client_id,
+            redirect_uri=oura_redirect_uri,
+            state=state,
+        )
+
+    # --- Debug helper (temporary) ------------------------------------------------
+    try:
+        if st.checkbox("Show Oura debug info (developer only)", key="oura_debug"):
+            st.markdown("**Oura debug**")
+            st.write("session_state['oura_oauth_state']:", st.session_state.get("oura_oauth_state"))
+            st.write("OURA_CLIENT_ID present:", bool(oura_client_id))
+            st.write("OURA_REDIRECT_URI present:", bool(oura_redirect_uri))
+            try:
+                rows = supabase.table("oura_oauth_states").select("*").eq("user_id", user_id).execute()
+                st.write("DB: oura_oauth_states rows for this user:", rows.data if getattr(rows, 'data', None) is not None else rows)
+            except Exception as e:
+                st.write("DB query failed:", e)
+            # Show the authorize URL so you can copy/paste it to inspect redirect errors
+            if oura_action_url:
+                st.write("Authorize URL:", oura_action_url)
+    except Exception:
+        pass
+
+    oura_creds_res = supabase.table("oura_credentials").select("user_id").eq("user_id", user_id).execute()
+    oura_connected = bool(oura_creds_res.data)
+    oura_status = (
+        "Connected" if oura_connected else "Ready to connect" if oura_action_url else "Not configured"
+    )
+    oura_action_label = "Reconnect" if oura_connected else "Connect"
+
+    apps = [
+        {
+            "name": "Oura",
+            "description": "Connect your Oura Ring for sleep, readiness, and activity data.",
+            "status": oura_status,
+            "action_url": oura_action_url,
+            "action_label": oura_action_label,
+        },
+        {"name": "Whoop", "description": "Coming soon: connect Whoop for recovery and strain insights.", "status": "Not configured", "action_url": None},
+        {"name": "Strava", "description": "Coming soon: connect Strava to sync workouts and training data.", "status": "Not configured", "action_url": None},
+        {"name": "Spotify", "description": "Coming soon: connect Spotify for listening and mood correlations.", "status": "Not configured", "action_url": None},
+    ]
+
+    for app in apps:
+        button_label = app.get("action_label", "Connect") if app["action_url"] else "Coming soon"
+        action_html = ""
+        card_start = (
+            f'<a href="{app["action_url"]}" target="_self" '
+            f'style="display:block;text-decoration:none;color:inherit;">'
+        ) if app["action_url"] else ""
+        card_end = "</a>" if app["action_url"] else ""
+
+        if app["action_url"]:
+            action_html = (
+                f'<span style="display:inline-block;background:#3dab7a;color:white;'
+                f'border-radius:10px;padding:0.75rem 1.2rem;font-weight:700;">'
+                f'{button_label}</span>'
+            )
+        else:
+            action_html = (
+                f'<button style="background:#ccc;color:white;border:none;border-radius:10px;'
+                f'padding:0.75rem 1.2rem;font-weight:700;" disabled>{button_label}</button>'
+            )
+
+        st.markdown(
+            f'{card_start}'
+            f'<div style="background:#fff; border:1px solid #ece9df; border-radius:15px; padding:1.2rem; margin-bottom:0.9rem;">'
+            f'<div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:0.6rem;">'
+            f'<div>'
+            f'<div style="font-size:1rem; font-weight:700; color:#1a1a1a;">{app["name"]}</div>'
+            f'<div style="font-size:0.9rem; color:#666; margin-top:0.18rem;">{app["description"]}</div>'
+            f'</div>'
+            f'<div>{action_html}</div>'
+            f'</div>'
+            f'<div style="font-size:0.82rem; color:#999;">Status: {app["status"]}</div>'
+            f'</div>'
+            f'{card_end}',
+            unsafe_allow_html=True,
+        )
 
 
 def render_dendrogram_tab(rows, oura_by_date):
@@ -3682,11 +3809,6 @@ def render_daily_reflection_tab(rows):
 
 # ── App entry point: dispatch tabs ──────────────────────────────────────────
 user_id = st.session_state["user_id"]
-# MIR-3 generalized callback runs FIRST: it only claims callbacks whose `state`
-# is "<provider>:<nonce>" (Spotify/Whoop/…) and clears the URL when done, so
-# the legacy Oura handler below never sees a foreign state and mis-fires.
-# Oura's own callback (plain nonce) passes through untouched.
-connections_ui.handle_oauth_callback(supabase, user_id)
 oura_ui.handle_oauth_callback(supabase, user_id)
 rows = load_all_entries(user_id)
 
@@ -3704,8 +3826,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "Reflection Trends",
     "Topic Map",
     "Dendrogram",
+    "Connections",
     "Settings",
-    "Connections",   # MIR-3: all providers (Spotify, Whoop, …); Oura stays in Settings until #26
 ])
 
 with tab1:
@@ -3724,7 +3846,7 @@ with tab5:
     render_dendrogram_tab(rows, oura_by_date)
 
 with tab6:
-    oura_ui.render_settings_tab(supabase, user_id)
+    render_connections_tab(supabase, user_id)
 
 with tab7:
-    connections_ui.render_connections_page(supabase, user_id)
+    oura_ui.render_settings_tab(supabase, user_id)
