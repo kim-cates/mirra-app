@@ -169,7 +169,7 @@ def mark_intro_seen(supabase, user_id: str) -> None:
 
 
 # ── Page renderer ─────────────────────────────────────────────────────────────
-def render_intro_page(supabase, user_id: str) -> None:
+def render_intro_page(supabase, user_id: str, show_cta: bool = True) -> None:
     st.markdown(INTRO_CSS, unsafe_allow_html=True)
 
     st.markdown('<div class="intro-wrap">', unsafe_allow_html=True)
@@ -249,20 +249,23 @@ def render_intro_page(supabase, user_id: str) -> None:
     )
 
     # ── CTA ──
-    _, btn_col, _ = st.columns([1, 2, 1])
-    with btn_col:
-        if st.button(
-            "Start today's reflection",
-            type="primary",
-            use_container_width=True,
-            key="intro_continue",
-        ):
-            mark_intro_seen(supabase, user_id)
-            st.rerun()
+    # Dropped when the page is re-read later from the Profile tab — there is
+    # nothing to dismiss and no reflection to start from there.
+    if show_cta:
+        _, btn_col, _ = st.columns([1, 2, 1])
+        with btn_col:
+            if st.button(
+                "Start today's reflection",
+                type="primary",
+                use_container_width=True,
+                key="intro_continue",
+            ):
+                mark_intro_seen(supabase, user_id)
+                st.rerun()
 
-    st.markdown(
-        '<div class="intro-footnote">You can revisit this from Settings anytime.</div>',
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            '<div class="intro-footnote">You can revisit this from your Profile anytime.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("</div>", unsafe_allow_html=True)

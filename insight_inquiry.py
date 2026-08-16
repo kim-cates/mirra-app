@@ -13,10 +13,14 @@ Questions, categories and suggestion links live in config lists below so the
 founders can add/reword them without touching logic.
 
 Storage: answers are collected into a plain dict and handed to
-``save_inquiry_responses``. The target table is being aligned with MIR-2's
-goals schema (issue #20) — until that lands, responses live in
-``st.session_state`` and the save seam is the single place to wire the DB in.
+``save_inquiry_responses``, which writes ``users.inquiry_responses`` (jsonb)
+plus the ``users.inquiry_completed_at`` marker that stops the onboarding
+chain from replaying on the next sign-in. The target table is still being
+aligned with MIR-2's goals schema (issue #20); when it lands, the jsonb
+column gets backfilled and these two functions are the only place to change.
 """
+
+from datetime import datetime, timezone
 
 import streamlit as st
 
@@ -157,20 +161,71 @@ def _all_selected_categories() -> list[str]:
     return picked
 
 
-def save_inquiry_responses(supabase, user_id: str, responses: dict) -> None:
-    """Persist inquiry responses.
+def save_inquiry_responses(supabase, user_id: str, responses: dict) -> bool:
+    """Persist inquiry responses. Returns True if they reached the database.
 
-    DB seam (issue #43 ↔ #20): the goals/inquiry table is being aligned with
-    Kim's MIR-2 schema (user_goals). Until that lands we keep responses in
-    session state so the rest of the app can already read them; swapping this
-    body for a Supabase upsert is the only change needed later.
+    Interim storage (#43 ↔ #20): writes users.inquiry_responses (jsonb) +
+    users.inquiry_completed_at until Kim's user_goals schema (#20) lands —
+    then this becomes per-row inserts and the jsonb column gets backfilled
+    and dropped. Session state is the pre-migration fallback.
     """
     st.session_state[_STATE_KEY] = responses
+    if supabase is None:
+        return False
+    try:
+        supabase.table("users").update({
+            "inquiry_responses": responses,
+            "inquiry_completed_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", user_id).execute()
+        return True
+    except Exception:
+        return False  # pre-migration — session fallback keeps the flow working
 
 
-def user_has_completed_inquiry(user_id: str) -> bool:
-    """True once the user submitted the inquiry (session-scoped for now)."""
-    return bool(st.session_state.get(_STATE_KEY))
+def mark_inquiry_completed(supabase, user_id: str) -> None:
+    """Record that the user passed the inquiry screen (e.g. skipped it)."""
+    st.session_state.setdefault(_STATE_KEY, {})
+    if supabase is None:
+        return
+    try:
+        supabase.table("users").update(
+            {"inquiry_completed_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", user_id).execute()
+    except Exception:
+        pass  # pre-migration — the session marker above still closes the gate
+
+
+def load_inquiry_responses(supabase, user_id: str) -> dict:
+    """Read saved inquiry answers ({} if none / pre-migration)."""
+    if supabase is not None:
+        try:
+            res = (supabase.table("users").select("inquiry_responses")
+                   .eq("id", user_id).limit(1).execute())
+            if res.data and res.data[0].get("inquiry_responses"):
+                return res.data[0]["inquiry_responses"]
+        except Exception:
+            pass
+    return dict(st.session_state.get(_STATE_KEY) or {})
+
+
+def user_has_completed_inquiry(supabase, user_id: str) -> bool:
+    """True once the user submitted (or skipped) the inquiry.
+
+    Reads users.inquiry_completed_at, with session state as the
+    pre-migration fallback.
+    """
+    if st.session_state.get(_STATE_KEY) is not None:
+        return True
+    if supabase is not None:
+        try:
+            res = (supabase.table("users").select("inquiry_completed_at")
+                   .eq("id", user_id).limit(1).execute())
+            if res.data and res.data[0].get("inquiry_completed_at"):
+                st.session_state[_STATE_KEY] = {}
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _render_question(q: dict) -> None:
@@ -256,12 +311,30 @@ def _render_priorities_page() -> None:
         )
 
 
-def render_insight_inquiry(supabase, user_id: str, on_complete=None) -> None:
-    """Render the survey as a wizard — one question per page + a focus page."""
+def seed_widget_state(responses: dict) -> None:
+    """Prefill the wizard widgets from saved answers (used when retaking)."""
+    for q in INQUIRY_QUESTIONS:
+        answer = (responses or {}).get(q["key"]) or {}
+        st.session_state[f"inquiry_text_{q['key']}"] = answer.get("text", "")
+        st.session_state[f"inquiry_cats_{q['key']}"] = list(answer.get("categories", []))
+        st.session_state[f"inquiry_focus_{q['key']}"] = list(answer.get("focus", []))
+    priorities = (responses or {}).get("_priorities") or {}
+    st.session_state["inquiry_priorities"] = list(priorities.get("top", []))
+    st.session_state["inquiry_period"] = priorities.get("period", FOCUS_PERIODS[-1])
+
+
+def render_insight_inquiry(supabase, user_id: str, on_complete=None,
+                           mode: str = "create") -> None:
+    """Render the survey as a wizard — one question per page + a focus page.
+
+    mode="create" is the onboarding gate (skippable); mode="edit" is retaking
+    it later from the Profile tab.
+    """
     step = st.session_state.get(_STEP_KEY, 0)
     total = len(INQUIRY_QUESTIONS) + 1  # questions + final priorities page
 
-    st.markdown("### Tell Mirra what matters to you")
+    if mode == "create":
+        st.markdown("### Tell Mirra what matters to you")
     if step < len(INQUIRY_QUESTIONS):
         st.caption(f"Question {step + 1} of {len(INQUIRY_QUESTIONS)} — answer in "
                    "your own words, pick categories, or both. Everything is optional.")
@@ -286,9 +359,19 @@ def render_insight_inquiry(supabase, user_id: str, on_complete=None) -> None:
                 st.rerun()
         else:
             if st.button("Save my answers", type="primary", use_container_width=True):
-                save_inquiry_responses(supabase, user_id, collect_responses())
+                saved = save_inquiry_responses(supabase, user_id, collect_responses())
                 st.session_state.pop(_STEP_KEY, None)
-                st.success("Saved — Mirra will use this to personalize your insights.")
+                if not saved:
+                    st.warning("Saved for this session only — the database isn't "
+                               "migrated for the inquiry yet.")
                 if on_complete:
                     on_complete()
                 st.rerun()
+
+    # Onboarding is optional: closing the gate without answers beats trapping
+    # a returning user behind a survey they already skipped once.
+    if mode == "create":
+        if st.button("Skip for now", key="inquiry_skip"):
+            mark_inquiry_completed(supabase, user_id)
+            st.session_state.pop(_STEP_KEY, None)
+            st.rerun()

@@ -1,7 +1,6 @@
 import streamlit as st
 import anthropic
 import base64
-import hashlib
 import secrets
 from supabase import create_client
 from datetime import date, datetime, timedelta
@@ -13,9 +12,12 @@ import oura
 import oura_ui
 import connections_ui  # MIR-3: provider framework (Spotify, Whoop, …)
 from oura import user_today
+from auth import render_login_page, render_logout_button
 from intro_page import render_intro_page, user_has_seen_intro
 from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
+from onboarding import should_run_onboarding
 from profile_form import render_profile_form, user_has_completed_profile
+from profile_tab import render_profile_tab
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -1675,8 +1677,11 @@ def get_top_similar_phrases(query: str, phrases: list[str], top_n: int = 25) -> 
     return [p for p, _ in similarities[:top_n]]
 
 
-def render_connections_tab(supabase, user_id: str) -> None:
-    st.markdown('<p class="title-text">Connections</p>', unsafe_allow_html=True)
+def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> None:
+    # show_header=False when this renders inside the Profile tab, which
+    # already carries the page title.
+    if show_header:
+        st.markdown('<p class="title-text">Connections</p>', unsafe_allow_html=True)
     st.markdown(
         '<div style="color:#888; font-size:0.92rem; margin-bottom:1.2rem">'
         'Connect external health and wellness apps to Mirra. More integrations coming soon.'
@@ -2335,102 +2340,31 @@ def render_dendrogram_tab(rows, oura_by_date):
 
 
 
-# ── Auth helpers ──────────────────────────────────────────────────────────────
-def hash_pw(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def render_login_page():
-    import base64 as b64mod
-    with open("logo.png", "rb") as f:
-        logo_b64 = b64mod.b64encode(f.read()).decode()
-
-    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="login-logo"><img src="data:image/png;base64,{logo_b64}" width="320"/></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="login-title">mirra</div>', unsafe_allow_html=True)
-    st.markdown('<div class="login-sub">Where patterns become awareness</div>', unsafe_allow_html=True)
-
-    mode = st.radio("", ["Sign in", "Create account"], horizontal=True, label_visibility="collapsed", key="auth_mode")
-
-    with st.container(border=True):
-        username = st.text_input("Username", key="auth_user", placeholder="your username")
-        password = st.text_input("Password", type="password", key="auth_pass", placeholder="••••••••")
-
-        if mode == "Sign in":
-            if st.button("Sign in", type="primary", use_container_width=True):
-                if not username or not password:
-                    st.error("Please enter both username and password.")
-                else:
-                    res = supabase.table("users").select("id,username,password_hash").eq("username", username.strip().lower()).execute()
-                    if not res.data:
-                        st.error("Username not found.")
-                    elif res.data[0]["password_hash"] != hash_pw(password):
-                        st.error("Incorrect password.")
-                    else:
-                        st.session_state["user_id"]   = res.data[0]["id"]
-                        st.session_state["username"]  = res.data[0]["username"]
-                        st.session_state["logged_in"] = True
-                        st.rerun()
-        else:
-            if st.button("Create account", type="primary", use_container_width=True):
-                if not username or not password:
-                    st.error("Please fill in all fields.")
-                elif len(password) < 6:
-                    st.error("Password must be at least 6 characters.")
-                else:
-                    clean = username.strip().lower()
-                    existing = supabase.table("users").select("id").eq("username", clean).execute()
-                    if existing.data:
-                        st.error("Username already taken.")
-                    else:
-                        new_user = supabase.table("users").insert({
-                            "username": clean,
-                            "password_hash": hash_pw(password),
-                        }).execute()
-                        uid = new_user.data[0]["id"]
-                        st.session_state["user_id"]   = uid
-                        st.session_state["username"]  = clean
-                        st.session_state["logged_in"] = True
-                        st.rerun()
-
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 if not st.session_state.get("logged_in"):
-    render_login_page()
+    render_login_page(supabase)
     st.stop()
 
-# Show the welcome intro page once per user. After they dismiss it (button on
-# the intro page calls `mark_intro_seen`), `has_seen_intro` is True and this
-# gate falls through.
-if not user_has_seen_intro(supabase, st.session_state["user_id"]):
-    render_intro_page(supabase, st.session_state["user_id"])
-    st.stop()
+# Onboarding chain (MIR-1): login → intro → profile (#16) → inquiry (#43) → app.
+# Each gate reads a completion marker from the users table, so signing back in
+# later drops straight into the app — these screens belong to a new account.
+# See onboarding.py for what happens before the markers migration is applied.
+if should_run_onboarding(supabase):
+    if not user_has_seen_intro(supabase, st.session_state["user_id"]):
+        render_intro_page(supabase, st.session_state["user_id"])
+        st.stop()
 
-# Onboarding chain (MIR-1): each gate shows once and falls through after
-# completion — login → intro → profile (#16) → inquiry (#43) → app.
-if not user_has_completed_profile(st.session_state["user_id"]):
-    render_profile_form(supabase, st.session_state["user_id"], mode="create")
-    st.stop()
+    if not user_has_completed_profile(supabase, st.session_state["user_id"]):
+        render_profile_form(supabase, st.session_state["user_id"], mode="create")
+        st.stop()
 
-if not user_has_completed_inquiry(st.session_state["user_id"]):
-    render_insight_inquiry(supabase, st.session_state["user_id"])
-    st.stop()
+    if not user_has_completed_inquiry(supabase, st.session_state["user_id"]):
+        render_insight_inquiry(supabase, st.session_state["user_id"])
+        st.stop()
 
-# Logout button
-with st.container():
-    col_space, col_logout = st.columns([5, 1])
-    with col_logout:
-        if st.button("Sign out", key="logout"):
-            for k in ["logged_in", "user_id", "username", "keywords",
-                      "save_success", "dendro_results", "insight_report",
-                      "has_seen_intro"]:
-                st.session_state.pop(k, None)
-            st.cache_data.clear()
-            st.rerun()
+st.session_state.pop("new_account", None)  # onboarding is behind us
+
+render_logout_button()
 
 
 
@@ -3831,14 +3765,15 @@ oura.auto_sync_if_stale(
 )
 oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+# Connections and the Oura settings both live inside Profile now — one place
+# the user manages "my stuff", instead of three tabs that each own a slice of it.
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Daily Reflection",
     "Weekly Insights",
     "Reflection Trends",
     "Topic Map",
     "Dendrogram",
-    "Connections",
-    "Settings",
+    "Profile",
 ])
 
 with tab1:
@@ -3857,7 +3792,4 @@ with tab5:
     render_dendrogram_tab(rows, oura_by_date)
 
 with tab6:
-    render_connections_tab(supabase, user_id)
-
-with tab7:
-    oura_ui.render_settings_tab(supabase, user_id)
+    render_profile_tab(supabase, user_id, render_connections=render_connections_tab)
