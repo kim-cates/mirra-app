@@ -32,6 +32,21 @@ create table if not exists public.connections (
   primary key (user_id, provider)
 );
 
+-- OAuth CSRF nonces. REQUIRED, not optional: Streamlit's session_state does not
+-- survive the redirect out to the vendor and back (the callback lands on a fresh
+-- session), so the `state` nonce must be persisted server-side or every genuine
+-- connection is rejected. Generalizes the existing oura_oauth_states table.
+-- Rows are single-use (deleted on consume) and expire after 10 minutes.
+create table if not exists public.oauth_states (
+  state       text        primary key,
+  provider    text        not null,
+  user_id     uuid        not null references public.users(id) on delete cascade,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists idx_oauth_states_created
+  on public.oauth_states (created_at);
+
 -- Spotify daily rollup, one row per (user, local day)
 create table if not exists public.spotify_daily (
   user_id         uuid        not null references public.users(id) on delete cascade,

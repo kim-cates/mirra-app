@@ -16,22 +16,35 @@ validates state parameter").
 """
 from __future__ import annotations
 
-import secrets as _secrets
 from typing import Optional
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import providers
-from providers import registry, token_store
+from providers import oauth_state, registry, token_store
 from providers.base import ConnectionState, ProviderError
+from providers.local_store import choose_backend
 
-_STATE_SESSION_PREFIX = "oauth_state_"   # session key per provider
 _BACKFILL_DAYS = 30
 
 
 # ── secrets helpers ───────────────────────────────────────────────────────────
 def _enc_key() -> str:
     return st.secrets.get("TOKEN_ENC_KEY", "")
+
+
+def _db(supabase):
+    """
+    Where connections/provider rows are written. Production → the real Supabase
+    client passed in. Demo (`CONNECTIONS_BACKEND="local"` in secrets) → a
+    file-backed local store, so we never touch the prod schema while demoing.
+    """
+    return choose_backend(supabase, st.secrets)
+
+
+def _is_local_demo() -> bool:
+    return (st.secrets.get("CONNECTIONS_BACKEND") or "").lower() == "local"
 
 
 def _build(provider_key: str):
@@ -52,12 +65,19 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
     if not code or not state or ":" not in state:
         return
 
+    supabase = _db(supabase)  # prod Supabase, or local demo store
     provider_key, _, nonce = state.partition(":")
-    expected = st.session_state.get(_STATE_SESSION_PREFIX + provider_key)
-    if not expected or nonce != expected:
-        st.error("Connection failed: security check (state) did not match. Please retry.")
+
+    # Validate the CSRF nonce against the PERSISTED store, not st.session_state:
+    # the vendor redirect starts a fresh Streamlit session, so session state is
+    # already gone by the time we get here. consume() is single-use + expiring.
+    issued_for = oauth_state.consume(supabase, nonce=nonce, provider=provider_key)
+    if not issued_for:
+        st.error("Connection failed: security check (state) did not match or expired. Please retry.")
         st.query_params.clear()
         return
+    # Bind the callback to the user the nonce was issued for.
+    user_id = issued_for
 
     try:
         provider = _build(provider_key)
@@ -73,7 +93,6 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
     except ProviderError as e:
         st.error(f"Couldn't connect {provider_key.title()}: {e}")
     finally:
-        st.session_state.pop(_STATE_SESSION_PREFIX + provider_key, None)
         st.query_params.clear()
 
 
@@ -81,6 +100,9 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
 def render_connections_page(supabase, user_id: str) -> None:
     """Render one card per registered provider with connect/disconnect controls."""
     st.markdown('<div class="section-label">Connections</div>', unsafe_allow_html=True)
+    supabase = _db(supabase)  # prod Supabase, or local demo store
+    if _is_local_demo():
+        st.caption("🧪 Demo mode — connections stored locally (encrypted), not in Supabase.")
 
     configured = set(registry.configured_keys(st.secrets))
     for meta in registry.all_meta():
@@ -101,10 +123,10 @@ def _render_provider_card(supabase, user_id: str, meta, state: ConnectionState,
             return
         if state == ConnectionState.NOT_CONNECTED:
             if st.button("Connect", key=f"connect_{meta.key}"):
-                _start_connect(meta.key)
+                _start_connect(supabase, user_id, meta.key)
         elif state == ConnectionState.NEEDS_REAUTH:
             if st.button("Reconnect", key=f"reconnect_{meta.key}"):
-                _start_connect(meta.key)
+                _start_connect(supabase, user_id, meta.key)
         else:  # CONNECTED
             if st.button("Disconnect", key=f"disconnect_{meta.key}"):
                 _disconnect(supabase, user_id, meta.key)
@@ -118,19 +140,25 @@ def _state_labels(state: ConnectionState) -> tuple[str, str]:
     }[state]
 
 
-def _start_connect(provider_key: str) -> None:
-    """Mint a CSRF nonce, stash it in session, and redirect to the vendor."""
+def _start_connect(db, user_id: str, provider_key: str) -> None:
+    """Mint a CSRF nonce, persist it, and send the user to the vendor."""
     try:
         provider = _build(provider_key)
     except ProviderError as e:
         st.error(str(e))
         return
-    nonce = _secrets.token_urlsafe(24)
-    st.session_state[_STATE_SESSION_PREFIX + provider_key] = nonce
+    oauth_state.sweep(db)  # opportunistic cleanup of expired nonces
+    nonce = oauth_state.issue(db, provider=provider_key, user_id=user_id)
     url = provider.authorize_url(state=f"{provider_key}:{nonce}")
-    # Redirect the top window to the provider's consent screen.
-    st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">', unsafe_allow_html=True)
-    st.link_button(f"Continue to {provider.meta.label} →", url)
+    # Streamlit renders markdown inside a sandboxed iframe, so a <meta refresh>
+    # can't navigate the top window reliably. Give the user an explicit link
+    # (honest "you're leaving to <vendor>" UX) and try a top-window JS hop as a
+    # convenience.
+    st.link_button(f"Continue to {provider.meta.label} →", url, type="primary")
+    components.html(
+        f"<script>try{{window.top.location.href={url!r};}}catch(e){{}}</script>",
+        height=0,
+    )
 
 
 def _disconnect(supabase, user_id: str, provider_key: str) -> None:

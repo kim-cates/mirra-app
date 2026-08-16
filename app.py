@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 
 import oura
 import oura_ui
+import connections_ui  # MIR-3: provider-agnostic Connections page + OAuth callback
 from oura import user_today
 from intro_page import render_intro_page, user_has_seen_intro
 from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
@@ -3681,6 +3682,11 @@ def render_daily_reflection_tab(rows):
 
 # ── App entry point: dispatch tabs ──────────────────────────────────────────
 user_id = st.session_state["user_id"]
+# MIR-3 generalized callback runs FIRST: it only claims callbacks whose `state`
+# is "<provider>:<nonce>" (Spotify/Whoop/…) and clears the URL when done, so
+# the legacy Oura handler below never sees a foreign state and mis-fires.
+# Oura's own callback (plain nonce) passes through untouched.
+connections_ui.handle_oauth_callback(supabase, user_id)
 oura_ui.handle_oauth_callback(supabase, user_id)
 rows = load_all_entries(user_id)
 
@@ -3692,13 +3698,14 @@ oura.auto_sync_if_stale(
 )
 oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "Daily Reflection",
     "Weekly Insights",
     "Reflection Trends",
     "Topic Map",
     "Dendrogram",
     "Settings",
+    "Connections",   # MIR-3: all providers (Spotify, Whoop, …); Oura stays in Settings until #26
 ])
 
 with tab1:
@@ -3718,3 +3725,6 @@ with tab5:
 
 with tab6:
     oura_ui.render_settings_tab(supabase, user_id)
+
+with tab7:
+    connections_ui.render_connections_page(supabase, user_id)

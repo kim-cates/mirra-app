@@ -4,3 +4,7 @@ __pycache__/
 .env
 *.ipynb_checkpoints
 .venv-preview/
+
+# MIR-3 local demo store (encrypted tokens, but never commit)
+.mirra_local/
+.venv-oauth/
