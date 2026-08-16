@@ -1,7 +1,11 @@
 # Streamlit theme config for Mirra.
 #
-# Save this file as `.streamlit/config.toml` in the project root (same level
-# as app.py). Streamlit Cloud picks it up automatically on deploy.
+# This file must live at `.streamlit/config.toml` — Streamlit reads the theme
+# from nowhere else. It used to sit at the repo root, where neither the local
+# dev server nor Streamlit Cloud ever picked it up, so every widget fell back
+# to Streamlit's default red accent (and to the dark theme on dark-mode
+# machines) while app.py's CSS kept forcing the cream background — which is
+# how we ended up with black buttons and unreadable labels on a cream page.
 #
 # Why this exists: when a user's phone is in dark mode, Streamlit Cloud
 # defaults to its built-in dark theme — which makes the background black
