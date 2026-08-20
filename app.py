@@ -1,7 +1,6 @@
 import streamlit as st
 import anthropic
 import base64
-import secrets
 from supabase import create_client
 from datetime import date, datetime, timedelta
 import json
@@ -1812,24 +1811,16 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
     oura_client_secret = st.secrets.get("OURA_CLIENT_SECRET")
     oura_redirect_uri = st.secrets.get("OURA_REDIRECT_URI")
     if oura_client_id and oura_client_secret and oura_redirect_uri:
-        if not st.session_state.get("oura_oauth_state"):
-            state = secrets.token_urlsafe(24)
-            st.session_state["oura_oauth_state"] = state
-            try:
-                supabase.table("oura_oauth_states").upsert({
-                    "state": state,
-                    "user_id": user_id,
-                }).execute()
-            except Exception:
-                pass
-        else:
-            state = st.session_state["oura_oauth_state"]
-
-        oura_action_url = oura.build_oauth_authorize_url(
-            client_id=oura_client_id,
-            redirect_uri=oura_redirect_uri,
-            state=state,
-        )
+        # One helper mints AND persists the nonce (oura_ui.issue_oauth_state), so
+        # this card and the "Connect with Oura" button below can never disagree
+        # about whether the state is in `oura_oauth_states`.
+        state = oura_ui.issue_oauth_state(supabase, user_id)
+        if state:
+            oura_action_url = oura.build_oauth_authorize_url(
+                client_id=oura_client_id,
+                redirect_uri=oura_redirect_uri,
+                state=state,
+            )
 
     # --- Debug helper (temporary) ------------------------------------------------
     try:
@@ -1896,18 +1887,23 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
                 f'padding:0.75rem 1.2rem;font-weight:700;" disabled>{button_label}</button>'
             )
 
+        # The card body is built from <span>s, not <div>s, on purpose. st.markdown
+        # renders this single line as inline HTML inside a <p>, and the HTML5
+        # parser closes that <p> the moment it meets a block element — which
+        # tears the wrapping <a> apart and leaves most of the card unclickable.
+        # Inline elements with display:block/flex keep the anchor in one piece.
         st.markdown(
             f'{card_start}'
-            f'<div style="background:#fff; border:1px solid #ece9df; border-radius:15px; padding:1.2rem; margin-bottom:0.9rem;">'
-            f'<div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:0.6rem;">'
-            f'<div>'
-            f'<div style="font-size:1rem; font-weight:700; color:#1a1a1a;">{app["name"]}</div>'
-            f'<div style="font-size:0.9rem; color:#666; margin-top:0.18rem;">{app["description"]}</div>'
-            f'</div>'
-            f'<div>{action_html}</div>'
-            f'</div>'
-            f'<div style="font-size:0.82rem; color:#999;">Status: {app["status"]}</div>'
-            f'</div>'
+            f'<span style="display:block; background:#fff; border:1px solid #ece9df; border-radius:15px; padding:1.2rem; margin-bottom:0.9rem;">'
+            f'<span style="display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:0.6rem;">'
+            f'<span style="display:block;">'
+            f'<span style="display:block; font-size:1rem; font-weight:700; color:#1a1a1a;">{app["name"]}</span>'
+            f'<span style="display:block; font-size:0.9rem; color:#666; margin-top:0.18rem;">{app["description"]}</span>'
+            f'</span>'
+            f'<span style="display:block;">{action_html}</span>'
+            f'</span>'
+            f'<span style="display:block; font-size:0.82rem; color:#999;">Status: {app["status"]}</span>'
+            f'</span>'
             f'{card_end}',
             unsafe_allow_html=True,
         )

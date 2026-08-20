@@ -19,6 +19,39 @@ import streamlit as st
 import oura
 
 
+# ── OAuth state (CSRF nonce) ─────────────────────────────────────────────────
+def issue_oauth_state(supabase, user_id: str, *, reuse: bool = True) -> str | None:
+    """Mint (or reuse) the `state` nonce AND persist it to `oura_oauth_states`.
+
+    Persisting is not optional. Streamlit's session_state does not survive the
+    redirect out to Oura and back — the callback lands on a fresh session — so
+    handle_oauth_callback below can only validate `state` against this table. A
+    nonce that lived only in session_state is guaranteed to come back as
+    "OAuth state mismatch", which is exactly what the Connect button used to do.
+
+    Returns the nonce, or None if it couldn't be persisted (in which case the
+    caller must not send the user to Oura — the round trip would fail anyway).
+    """
+    state = st.session_state.get("oura_oauth_state") if reuse else None
+    # Streamlit re-runs the whole script on every interaction; once this session's
+    # nonce is in the table there's nothing to write again.
+    if state and st.session_state.get("_oura_state_persisted") == state:
+        return state
+    if not state:
+        state = secrets.token_urlsafe(24)
+    try:
+        supabase.table("oura_oauth_states").upsert({
+            "state": state,
+            "user_id": user_id,
+        }).execute()
+    except Exception as e:
+        st.error(f"Couldn't start the Oura connection (state store unavailable): {e}")
+        return None
+    st.session_state["oura_oauth_state"] = state
+    st.session_state["_oura_state_persisted"] = state
+    return state
+
+
 # ── OAuth callback handling ───────────────────────────────────────────────────
 def handle_oauth_callback(supabase, user_id: str) -> None:
     """
@@ -79,6 +112,7 @@ def handle_oauth_callback(supabase, user_id: str) -> None:
         # Clear the URL params and the state nonce so we don't re-process
         st.query_params.clear()
         st.session_state.pop("oura_oauth_state", None)
+        st.session_state.pop("_oura_state_persisted", None)
 
 
 # ── Settings tab ──────────────────────────────────────────────────────────────
@@ -216,23 +250,19 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
             "You'll be redirected back here when done."
         )
 
-        # Generate fresh state nonce per click and stash in session
-        if st.button("Connect with Oura", type="primary", key="oura_oauth_connect"):
-            state = secrets.token_urlsafe(24)
-            st.session_state["oura_oauth_state"] = state
+        # One click, not two. This used to be an st.button that revealed an
+        # "Authorize" link on the next rerun — and that link disappeared again on
+        # any other interaction. The nonce is minted and written to
+        # `oura_oauth_states` up front so the callback can still validate it once
+        # the redirect back from Oura has wiped this session.
+        state = issue_oauth_state(supabase, user_id)
+        if state:
             url = oura.build_oauth_authorize_url(
                 client_id=client_id,
                 redirect_uri=redirect_uri,
                 state=state,
             )
-            # Streamlit can't redirect natively, so render a link the user clicks.
-            st.markdown(
-                f'<a href="{url}" target="_self" '
-                f'style="display:inline-block;margin-top:0.6rem;padding:0.6rem 1.2rem;'
-                f'background:#3dab7a;color:white;border-radius:8px;'
-                f'text-decoration:none;font-weight:600">Authorize on Oura →</a>',
-                unsafe_allow_html=True,
-            )
+            st.link_button("Connect with Oura →", url, type="primary")
 
 
 # ── Today-tab badges ──────────────────────────────────────────────────────────
