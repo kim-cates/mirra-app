@@ -1869,8 +1869,14 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
     for app in apps:
         button_label = app.get("action_label", "Connect") if app["action_url"] else "Coming soon"
         action_html = ""
+        # target="_top", not "_self": vendor consent pages send
+        # `X-Frame-Options: DENY` / `frame-ancestors 'none'`, so if the app is
+        # ever viewed inside a frame (Streamlit Cloud's editor preview, an
+        # embedded browser, an <iframe> embed) a "_self" hop navigates the frame
+        # and the browser shows "refused to connect". "_top" always targets the
+        # real tab, and behaves exactly like "_self" when there's no frame.
         card_start = (
-            f'<a href="{app["action_url"]}" target="_self" '
+            f'<a href="{app["action_url"]}" target="_top" '
             f'style="display:block;text-decoration:none;color:inherit;">'
         ) if app["action_url"] else ""
         card_end = "</a>" if app["action_url"] else ""

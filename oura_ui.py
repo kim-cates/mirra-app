@@ -262,6 +262,11 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
                 redirect_uri=redirect_uri,
                 state=state,
             )
+            # st.link_button renders target="_blank", which is required here:
+            # Streamlit Cloud serves the app inside an iframe and Oura's consent
+            # page sends `X-Frame-Options: DENY` / `frame-ancestors 'none'`, so
+            # any same-frame hop dies with "refused to connect". Do not swap this
+            # for a "_self" anchor — use "_top" if it ever needs to be raw HTML.
             st.link_button("Connect with Oura →", url, type="primary")
 
 
