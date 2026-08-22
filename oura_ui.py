@@ -52,6 +52,26 @@ def issue_oauth_state(supabase, user_id: str, *, reuse: bool = True) -> str | No
     return state
 
 
+def oauth_authorize_url(supabase, user_id: str) -> str | None:
+    """Authorize URL for the Oura OAuth flow, or None if it isn't usable.
+
+    Single source of truth for every connect/reconnect entry point, so none of
+    them can drift into handing out a nonce that was never persisted.
+    """
+    client_id = st.secrets.get("OURA_CLIENT_ID")
+    redirect_uri = st.secrets.get("OURA_REDIRECT_URI")
+    if not client_id or not redirect_uri:
+        return None
+    state = issue_oauth_state(supabase, user_id)
+    if not state:
+        return None
+    return oura.build_oauth_authorize_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
+
+
 # ── OAuth callback handling ───────────────────────────────────────────────────
 def handle_oauth_callback(supabase, user_id: str) -> None:
     """
@@ -162,7 +182,16 @@ def _render_connected_state(supabase, user_id: str, creds: dict) -> None:
         unsafe_allow_html=True,
     )
 
-    col_sync_7, col_sync_30, col_disconnect = st.columns([1, 1, 1])
+    # Re-authorizing needs a live path here, not just on the Connections card:
+    # once you're connected the card is the only other place offering it, and a
+    # stale or revoked grant is exactly when you need it most.
+    reconnect_url = oauth_authorize_url(supabase, user_id) if creds["auth_type"] == "oauth" else None
+
+    if reconnect_url:
+        col_sync_7, col_sync_30, col_reconnect, col_disconnect = st.columns([1, 1, 1, 1])
+    else:
+        col_sync_7, col_sync_30, col_disconnect = st.columns([1, 1, 1])
+        col_reconnect = None
 
     with col_sync_7:
         if st.button("Sync last 7 days", use_container_width=True):
@@ -171,6 +200,10 @@ def _render_connected_state(supabase, user_id: str, creds: dict) -> None:
     with col_sync_30:
         if st.button("Sync last 30 days", use_container_width=True):
             _do_sync(supabase, user_id, creds, days_back=30)
+
+    if col_reconnect is not None:
+        with col_reconnect:
+            st.link_button("Reconnect", reconnect_url, use_container_width=True)
 
     with col_disconnect:
         if st.button("Disconnect", use_container_width=True):
@@ -233,10 +266,8 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
 
     # ─── OAuth flow ───
     with oauth_tab:
-        try:
-            client_id = st.secrets["OURA_CLIENT_ID"]
-            redirect_uri = st.secrets["OURA_REDIRECT_URI"]
-        except KeyError:
+        url = oauth_authorize_url(supabase, user_id)
+        if not url:
             st.info(
                 "OAuth not configured yet. Add `OURA_CLIENT_ID`, `OURA_CLIENT_SECRET`, "
                 "and `OURA_REDIRECT_URI` to `.streamlit/secrets.toml`. "
@@ -249,25 +280,12 @@ def _render_disconnected_state(supabase, user_id: str) -> None:
             "Click below to authorize Mirra to read your Oura data. "
             "You'll be redirected back here when done."
         )
-
         # One click, not two. This used to be an st.button that revealed an
         # "Authorize" link on the next rerun — and that link disappeared again on
-        # any other interaction. The nonce is minted and written to
-        # `oura_oauth_states` up front so the callback can still validate it once
-        # the redirect back from Oura has wiped this session.
-        state = issue_oauth_state(supabase, user_id)
-        if state:
-            url = oura.build_oauth_authorize_url(
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                state=state,
-            )
-            # st.link_button renders target="_blank", which is required here:
-            # Streamlit Cloud serves the app inside an iframe and Oura's consent
-            # page sends `X-Frame-Options: DENY` / `frame-ancestors 'none'`, so
-            # any same-frame hop dies with "refused to connect". Do not swap this
-            # for a "_self" anchor — use "_top" if it ever needs to be raw HTML.
-            st.link_button("Connect with Oura →", url, type="primary")
+        # any other interaction. It must stay a real widget, not a hand-rolled
+        # <a> in st.markdown: those did not reliably fire a navigation, which is
+        # what made Connect/Reconnect look dead on the Connections cards.
+        st.link_button("Connect with Oura →", url, type="primary")
 
 
 # ── Today-tab badges ──────────────────────────────────────────────────────────

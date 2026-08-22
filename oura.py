@@ -201,11 +201,25 @@ def save_pat_credentials(supabase, user_id: str, token: str) -> None:
 
 
 def save_oauth_credentials(supabase, user_id: str, token_payload: dict) -> None:
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_payload["expires_in"])
+    # Re-authorizing an already-connected account (the Reconnect path) can come
+    # back WITHOUT a refresh_token — OAuth2 makes it optional and providers
+    # routinely omit it when a grant already exists. Subscripting it here used to
+    # raise KeyError, which handle_oauth_callback doesn't catch (it only handles
+    # OuraError), so a reconnect blew up instead of saving. Fall back to the
+    # token already on file, and only then to None.
+    refresh_token = token_payload.get("refresh_token")
+    if not refresh_token:
+        existing = (supabase.table("oura_credentials").select("refresh_token")
+                    .eq("user_id", user_id).execute())
+        refresh_token = ((existing.data or [{}])[0] or {}).get("refresh_token")
+
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=int(token_payload.get("expires_in") or 86400)
+    )
     supabase.table("oura_credentials").upsert({
         "user_id": user_id,
         "access_token": token_payload["access_token"],
-        "refresh_token": token_payload["refresh_token"],
+        "refresh_token": refresh_token,
         "token_expires_at": expires_at.isoformat(),
         "auth_type": "oauth",
         "connected_at": datetime.now(timezone.utc).isoformat(),

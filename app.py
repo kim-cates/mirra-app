@@ -1806,21 +1806,16 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
         unsafe_allow_html=True,
     )
 
-    oura_action_url = None
     oura_client_id = st.secrets.get("OURA_CLIENT_ID")
     oura_client_secret = st.secrets.get("OURA_CLIENT_SECRET")
     oura_redirect_uri = st.secrets.get("OURA_REDIRECT_URI")
-    if oura_client_id and oura_client_secret and oura_redirect_uri:
-        # One helper mints AND persists the nonce (oura_ui.issue_oauth_state), so
-        # this card and the "Connect with Oura" button below can never disagree
-        # about whether the state is in `oura_oauth_states`.
-        state = oura_ui.issue_oauth_state(supabase, user_id)
-        if state:
-            oura_action_url = oura.build_oauth_authorize_url(
-                client_id=oura_client_id,
-                redirect_uri=oura_redirect_uri,
-                state=state,
-            )
+    # One helper builds the URL and persists the nonce (oura_ui), so this card,
+    # the OAuth tab and the Reconnect button can never disagree about whether
+    # the state is in `oura_oauth_states`.
+    oura_action_url = (
+        oura_ui.oauth_authorize_url(supabase, user_id)
+        if oura_client_secret else None
+    )
 
     # --- Debug helper (temporary) ------------------------------------------------
     try:
@@ -1866,53 +1861,34 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
         ),
     ]
 
-    for app in apps:
-        button_label = app.get("action_label", "Connect") if app["action_url"] else "Coming soon"
-        action_html = ""
-        # target="_top", not "_self": vendor consent pages send
-        # `X-Frame-Options: DENY` / `frame-ancestors 'none'`, so if the app is
-        # ever viewed inside a frame (Streamlit Cloud's editor preview, an
-        # embedded browser, an <iframe> embed) a "_self" hop navigates the frame
-        # and the browser shows "refused to connect". "_top" always targets the
-        # real tab, and behaves exactly like "_self" when there's no frame.
-        card_start = (
-            f'<a href="{app["action_url"]}" target="_top" '
-            f'style="display:block;text-decoration:none;color:inherit;">'
-        ) if app["action_url"] else ""
-        card_end = "</a>" if app["action_url"] else ""
-
-        if app["action_url"]:
-            action_html = (
-                f'<span style="display:inline-block;background:#3dab7a;color:white;'
-                f'border-radius:10px;padding:0.75rem 1.2rem;font-weight:700;">'
-                f'{button_label}</span>'
-            )
-        else:
-            action_html = (
-                f'<button style="background:#ccc;color:white;border:none;border-radius:10px;'
-                f'padding:0.75rem 1.2rem;font-weight:700;" disabled>{button_label}</button>'
-            )
-
-        # The card body is built from <span>s, not <div>s, on purpose. st.markdown
-        # renders this single line as inline HTML inside a <p>, and the HTML5
-        # parser closes that <p> the moment it meets a block element — which
-        # tears the wrapping <a> apart and leaves most of the card unclickable.
-        # Inline elements with display:block/flex keep the anchor in one piece.
-        st.markdown(
-            f'{card_start}'
-            f'<span style="display:block; background:#fff; border:1px solid #ece9df; border-radius:15px; padding:1.2rem; margin-bottom:0.9rem;">'
-            f'<span style="display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:0.6rem;">'
-            f'<span style="display:block;">'
-            f'<span style="display:block; font-size:1rem; font-weight:700; color:#1a1a1a;">{app["name"]}</span>'
-            f'<span style="display:block; font-size:0.9rem; color:#666; margin-top:0.18rem;">{app["description"]}</span>'
-            f'</span>'
-            f'<span style="display:block;">{action_html}</span>'
-            f'</span>'
-            f'<span style="display:block; font-size:0.82rem; color:#999;">Status: {app["status"]}</span>'
-            f'</span>'
-            f'{card_end}',
-            unsafe_allow_html=True,
-        )
+    # The action is a real st.link_button, not an <a> pill inside st.markdown.
+    # The hand-rolled anchor did not reliably fire a navigation — which is why
+    # Connect/Reconnect appeared to do nothing, while the plain markdown link in
+    # the debug panel (and the link_button in the Oura OAuth tab) always worked.
+    # Only the card's chrome is custom HTML now; anything clickable is a widget.
+    for app_card in apps:
+        with st.container(border=True):
+            info_col, action_col = st.columns([0.68, 0.32], vertical_alignment="center")
+            with info_col:
+                st.markdown(
+                    f'<span style="display:block; font-size:1rem; font-weight:700; color:#1a1a1a;">{app_card["name"]}</span>'
+                    f'<span style="display:block; font-size:0.9rem; color:#666; margin-top:0.18rem;">{app_card["description"]}</span>'
+                    f'<span style="display:block; font-size:0.82rem; color:#999; margin-top:0.6rem;">Status: {app_card["status"]}</span>',
+                    unsafe_allow_html=True,
+                )
+            with action_col:
+                if app_card["action_url"]:
+                    st.link_button(
+                        app_card.get("action_label", "Connect"),
+                        app_card["action_url"],
+                        type="primary",
+                        width="stretch",
+                    )
+                else:
+                    st.button(
+                        "Coming soon", disabled=True, width="stretch",
+                        key=f"soon_{app_card['name'].lower()}",
+                    )
 
 
 def render_dendrogram_tab(rows, oura_by_date):
