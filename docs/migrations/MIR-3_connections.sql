@@ -1,6 +1,7 @@
 -- ──────────────────────────────────────────────────────────────────────────
 --  MIR-3 · OAuth framework — connections + spotify_daily
---  Run in the Supabase SQL editor, then mirror into migrations.sql.
+--  Run in the Supabase SQL editor. Already mirrored into migrations.sql (the
+--  canonical schema file) — keep the two in sync if you edit either.
 --
 --  IDENTITY: keyed on the app's REAL identity — public.users(id) — because the
 --  app authenticates against the custom public.users table (auth.py sets
