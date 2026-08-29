@@ -185,6 +185,23 @@ def _disconnect(supabase, user_id: str, provider_key: str) -> None:
 # tables aren't migrated yet, the card degrades to "Not configured" rather than
 # taking the whole tab down. That matters because this ships before the
 # migration is applied.
+def _short_error(e: Exception) -> str:
+    """
+    One readable line for a card. Keeps the useful part of a PostgREST error
+    (e.g. 'new row violates row-level security policy') without dumping a raw
+    payload into the UI.
+    """
+    msg = str(e).strip().replace("\n", " ")
+    low = msg.lower()
+    if "row-level security" in low or "violates row level security" in low:
+        return "database rejected the write (row-level security)"
+    if "does not exist" in low or "not found" in low:
+        return "table missing — run the migration"
+    if "permission denied" in low:
+        return "permission denied on the table"
+    return (msg[:110] + "…") if len(msg) > 110 else (msg or type(e).__name__)
+
+
 def provider_card(supabase, user_id: str, provider_key: str, *,
                   description: str = "") -> dict:
     """Build one app-card dict for `provider_key`, degrading safely on error."""
@@ -200,12 +217,20 @@ def provider_card(supabase, user_id: str, provider_key: str, *,
     if not st.secrets.get(f"{provider_key.upper()}_CLIENT_ID"):
         return card  # no credentials yet → stays a placeholder
 
+    # Checked up front: without it the connect flow gets past the button and then
+    # dies inside crypto.encrypt, which is a much harder failure to read.
+    if not st.secrets.get("TOKEN_ENC_KEY"):
+        card["status"] = "Setup required — TOKEN_ENC_KEY missing from secrets"
+        return card
+
     db = _db(supabase)
     try:
         connected = token_store.connection_state(db, user_id, provider_key)
-    except Exception:
-        # Table not migrated yet — surface the setup gap without breaking the tab.
-        card["status"] = "Setup required"
+    except Exception as e:
+        # Say WHY. A silent "Setup required" hides permission errors (RLS
+        # rejecting the write) behind what looks like unfinished configuration —
+        # that cost us a long debugging session once already.
+        card["status"] = f"Setup required — {_short_error(e)}"
         return card
 
     # Streamlit re-runs this on every interaction, so reuse one nonce per session
@@ -220,10 +245,13 @@ def provider_card(supabase, user_id: str, provider_key: str, *,
             nonce = oauth_state.issue(db, provider=provider_key, user_id=user_id)
             st.session_state[sess_key] = nonce
         card["action_url"] = provider.authorize_url(state=f"{provider_key}:{nonce}")
-    except ProviderError:
+    except ProviderError as e:
+        card["status"] = f"Not configured — {_short_error(e)}"
         return card
-    except Exception:
-        card["status"] = "Setup required"
+    except Exception as e:
+        # Most likely the oauth_states insert being refused (RLS), which is a
+        # permissions problem, not a missing migration. Name it.
+        card["status"] = f"Setup required — {_short_error(e)}"
         return card
 
     if connected == ConnectionState.CONNECTED:
