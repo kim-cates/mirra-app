@@ -239,23 +239,23 @@ create index if not exists idx_spotify_daily_user_date
 
 
 -- Mirrors docs/migrations/MIR-56_complete.sql (the file to paste into the SQL editor).
--- ──────────────────────────────────────────────────────────────────────────
---  MIR-56 · Complete the Supabase Auth move
+-- --------------------------------------------------------------------------
+--  MIR-56 - Complete the Supabase Auth move
 --
 --  Written against production as found on 2026-08-28 (evening HST), after Kim
---  ran steps 1–3 of MIR-56_supabase_auth.sql: public.users is keyed on
---  auth.users (no password_hash), the MIR-3 tables exist — but
+--  ran steps 1-3 of MIR-56_supabase_auth.sql: public.users is keyed on
+--  auth.users (no password_hash), the MIR-3 tables exist - but
 --    * the MIR-1 profile / onboarding columns were never added, so every
 --      onboarding marker update in the app matches nothing;
 --    * nothing creates the profile row when an account signs up;
 --    * RLS is still OFF (the anon key reads oura_daily / oura_oauth_states).
---  This script finishes the job. Idempotent — safe to run twice. It does not
+--  This script finishes the job. Idempotent - safe to run twice. It does not
 --  touch foreign keys or existing rows.
--- ──────────────────────────────────────────────────────────────────────────
+-- --------------------------------------------------------------------------
 
 begin;
 
--- ── 1. Profile + onboarding columns (MIR-1 story #14 / PR #53) ─────────────
+-- -- 1. Profile + onboarding columns (MIR-1 story #14 / PR #53) -------------
 alter table public.users
   add column if not exists email                 text,
   add column if not exists phone                 text,
@@ -276,7 +276,7 @@ create unique index if not exists idx_users_email
   on public.users (lower(email))
   where email is not null and email <> '';
 
--- ── 2. Profile row is created by the database, not the app ─────────────────
+-- -- 2. Profile row is created by the database, not the app -----------------
 -- With "Confirm email" on, sign-up returns no session, so the app has nothing
 -- to write public.users with (RLS needs auth.uid()). Do it server-side.
 create or replace function public.handle_new_user()
@@ -318,7 +318,7 @@ update auth.users
    set email_confirmed_at = now()
  where email_confirmed_at is null;
 
--- ── 3. RLS on every per-user table (MIR-56 step 4, unchanged) ──────────────
+-- -- 3. RLS on every per-user table (MIR-56 step 4, unchanged) --------------
 alter table public.users             enable row level security;
 alter table public.reflections       enable row level security;
 alter table public.oura_daily        enable row level security;
@@ -372,7 +372,7 @@ alter table if exists public.oura_tokens enable row level security;
 
 commit;
 
--- ── Verify (this is what the SQL editor shows after Run) ───────────────────
+-- -- Verify (this is what the SQL editor shows after Run) -------------------
 -- Every public table with rowsecurity = true and only "<table>: <cmd> own"
 -- policies. With the anon key and no session, every table returns 0 rows.
 select t.tablename,
