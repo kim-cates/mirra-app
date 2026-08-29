@@ -1,33 +1,52 @@
-"""Authentication for Mirra — sign in / create account.
+"""Authentication for Mirra — sign in / create account, backed by Supabase Auth.
 
-Identity lives in the custom `public.users` table (username + SHA256 password
-hash), not Supabase Auth — see the identity note in migrations.sql before
-adding per-user tables.
+Identity is Supabase Auth (`auth.users`). `public.users` is a profile table whose
+primary key IS the auth id, so `st.session_state["user_id"]` still holds the id
+every other module already uses — intro_page, profile_form, insight_inquiry and
+the MIR-3 provider tables need no changes.
 
-This module is the single implementation of the auth surface: app.py imports
-`render_login_page`, `render_logout_button` and `hash_pw` from here.
+Why this replaced the custom login: the app talks to Supabase with the anon key,
+which by design reaches the browser. While identity lived in a custom table,
+`auth.uid()` was null, RLS could not be enabled, and that key could read every
+user's rows. With Supabase Auth, RLS finally has an identity to match on.
 
-Sign in and Create account are two explicit modes, and they must stay
-distinct: signing in returns you to the app you already set up, while
-creating an account is the only path that starts onboarding. The onboarding
-gates themselves read completion markers from the database (see
-profile_form.user_has_completed_profile), so a returning user is never asked
-the onboarding questions twice.
+Two consequences worth knowing:
+
+  * **Sign-in is by email, not username.** Supabase Auth keys on email. The
+    username is kept as a display name in user metadata and on the profile row.
+  * **Each Streamlit session needs its OWN Supabase client.** A client cached
+    with @st.cache_resource is shared across all users of the deployment, so
+    storing one user's auth session on it would hand that session to everyone
+    else. `get_client()` therefore keeps a per-session client in session_state.
+
+Sign in and Create account stay two explicit modes: signing in returns you to the
+app you already set up, while creating an account is the only path that starts
+onboarding. The onboarding gates read completion markers from the database, so a
+returning user is never asked the onboarding questions twice.
 """
 
 import base64
-import hashlib
 import re
 
 import streamlit as st
+from supabase import create_client
 
 MIN_PASSWORD_LENGTH = 6
 USERNAME_PATTERN = re.compile(r"^[a-z0-9._-]{3,32}$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def hash_pw(password: str) -> str:
-    """Hash a password using SHA256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+# ── Per-session client ────────────────────────────────────────────────────────
+def get_client():
+    """
+    The Supabase client for THIS browser session, carrying this user's auth
+    session. Never cache this globally — see the module docstring.
+    """
+    if "sb_client" not in st.session_state:
+        st.session_state["sb_client"] = create_client(
+            st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
+        )
+    return st.session_state["sb_client"]
 
 
 def _logo_base64() -> str | None:
@@ -48,8 +67,13 @@ def _start_session(user_id: str, username: str, *, new_account: bool) -> None:
     st.rerun()
 
 
+def _display_name(user, fallback: str = "") -> str:
+    meta = getattr(user, "user_metadata", None) or {}
+    return meta.get("username") or (user.email or fallback).split("@")[0]
+
+
 # ── Pages ─────────────────────────────────────────────────────────────────────
-def render_login_page(supabase) -> None:
+def render_login_page(supabase=None) -> None:
     """Render the signed-out screen: Sign in | Create account."""
     logo_b64 = _logo_base64()
 
@@ -70,26 +94,29 @@ def render_login_page(supabase) -> None:
     )
 
     if mode == "Sign in":
-        _render_signin(supabase)
+        _render_signin()
     else:
-        _render_signup(supabase)
+        _render_signup()
 
 
-def _render_signin(supabase) -> None:
+def _render_signin() -> None:
     with st.container(border=True):
         with st.form("signin_form", border=False):
-            username = st.text_input("Username", key="signin_user", placeholder="your username")
+            email = st.text_input("Email", key="signin_email", placeholder="you@example.com")
             password = st.text_input("Password", key="signin_pass", type="password",
                                      placeholder="••••••••")
             submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
         if submitted:
-            handle_signin(supabase, username, password)
+            handle_signin(email, password)
+        if st.button("Forgot password?", key="forgot_pw"):
+            send_password_reset(st.session_state.get("signin_email", ""))
     st.caption("New to Mirra? Switch to **Create account** above.")
 
 
-def _render_signup(supabase) -> None:
+def _render_signup() -> None:
     with st.container(border=True):
         with st.form("signup_form", border=False):
+            email = st.text_input("Email", key="signup_email", placeholder="you@example.com")
             username = st.text_input("Username", key="signup_user", placeholder="pick a username")
             password = st.text_input("Password", key="signup_pass", type="password",
                                      placeholder=f"at least {MIN_PASSWORD_LENGTH} characters")
@@ -98,40 +125,43 @@ def _render_signup(supabase) -> None:
             submitted = st.form_submit_button("Create account", type="primary",
                                               use_container_width=True)
         if submitted:
-            handle_signup(supabase, username, password, confirm)
+            handle_signup(email, username, password, confirm)
     st.caption("Already have an account? Switch to **Sign in** above.")
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
-def handle_signin(supabase, username: str, password: str) -> None:
-    """Verify credentials and open a session."""
-    if not username or not password:
-        st.error("Please enter both username and password.")
+def handle_signin(email: str, password: str) -> None:
+    """Verify credentials against Supabase Auth and open a session."""
+    email = (email or "").strip().lower()
+    if not email or not password:
+        st.error("Please enter both email and password.")
         return
 
-    clean = username.strip().lower()
+    client = get_client()
     try:
-        res = (supabase.table("users").select("id,username,password_hash")
-               .eq("username", clean).limit(1).execute())
+        res = client.auth.sign_in_with_password({"email": email, "password": password})
     except Exception:
-        st.error("Couldn't reach the database. Please try again in a moment.")
+        # One generic message: never reveal whether an account exists.
+        st.error("Incorrect email or password.")
         return
 
-    # One generic message for both failure modes so the form can't be used to
-    # find out which usernames exist.
-    if not res.data or res.data[0]["password_hash"] != hash_pw(password):
-        st.error("Incorrect username or password.")
+    if not res or not res.user:
+        st.error("Incorrect email or password.")
         return
 
-    _start_session(res.data[0]["id"], res.data[0]["username"], new_account=False)
+    _start_session(res.user.id, _display_name(res.user), new_account=False)
 
 
-def handle_signup(supabase, username: str, password: str, confirm: str = None) -> None:
-    """Create an account and open a session."""
+def handle_signup(email: str, username: str, password: str, confirm: str = None) -> None:
+    """Create a Supabase Auth account plus its profile row, and open a session."""
+    email = (email or "").strip().lower()
     clean = (username or "").strip().lower()
 
-    if not clean or not password:
+    if not email or not clean or not password:
         st.error("Please fill in all fields.")
+        return
+    if not EMAIL_PATTERN.match(email):
+        st.error("That doesn't look like a valid email address.")
         return
     if not USERNAME_PATTERN.match(clean):
         st.error("Username must be 3–32 characters: letters, numbers, dot, dash or underscore.")
@@ -143,25 +173,66 @@ def handle_signup(supabase, username: str, password: str, confirm: str = None) -
         st.error("The two passwords don't match.")
         return
 
+    client = get_client()
     try:
-        existing = supabase.table("users").select("id").eq("username", clean).limit(1).execute()
-        if existing.data:
-            st.error("That username is taken. Try another one — or sign in instead.")
-            return
-        new_user = supabase.table("users").insert({
-            "username": clean,
-            "password_hash": hash_pw(password),
-        }).execute()
-    except Exception:
+        res = client.auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {"data": {"username": clean}},
+        })
+    except Exception as e:
+        msg = str(e).lower()
+        if "already" in msg or "registered" in msg:
+            st.error("That email is already registered. Try signing in instead.")
+        else:
+            st.error("Couldn't create the account right now. Please try again in a moment.")
+        return
+
+    if not res or not res.user:
         st.error("Couldn't create the account right now. Please try again in a moment.")
         return
 
-    _start_session(new_user.data[0]["id"], clean, new_account=True)
+    # If the project requires email confirmation, there's no session yet — say so
+    # rather than dropping the user on a blank screen.
+    if not getattr(res, "session", None):
+        st.success("Account created. Check your email to confirm it, then sign in.")
+        return
+
+    # Profile row: primary key IS the auth id (see MIR-56 migration).
+    try:
+        client.table("users").upsert(
+            {"id": res.user.id, "username": clean, "email": email},
+            on_conflict="id",
+        ).execute()
+    except Exception:
+        # The account exists; a missing profile row is recoverable on next load,
+        # so don't strand the user here.
+        pass
+
+    _start_session(res.user.id, clean, new_account=True)
+
+
+def send_password_reset(email: str) -> None:
+    """Email a reset link. Always reports success so the form can't probe accounts."""
+    email = (email or "").strip().lower()
+    if not EMAIL_PATTERN.match(email):
+        st.error("Enter your email address above first.")
+        return
+    try:
+        get_client().auth.reset_password_email(email)
+    except Exception:
+        pass
+    st.success("If that email has an account, a reset link is on its way.")
 
 
 def change_password(supabase, user_id: str, current: str, new: str,
                     confirm: str) -> tuple[bool, str]:
-    """Change the signed-in user's password. Returns (ok, message)."""
+    """
+    Change the signed-in user's password. Returns (ok, message).
+
+    `supabase` and `user_id` are kept in the signature for the existing caller in
+    profile_tab; the operation itself acts on the current Supabase session.
+    """
     if not current or not new:
         return False, "Please fill in both your current and new password."
     if len(new) < MIN_PASSWORD_LENGTH:
@@ -171,22 +242,26 @@ def change_password(supabase, user_id: str, current: str, new: str,
     if new == current:
         return False, "That's your current password — pick a new one."
 
+    client = get_client()
+    email = st.session_state.get("email") or ""
     try:
-        res = (supabase.table("users").select("password_hash")
-               .eq("id", user_id).limit(1).execute())
-        if not res.data or res.data[0]["password_hash"] != hash_pw(current):
-            return False, "Your current password isn't right."
-        supabase.table("users").update(
-            {"password_hash": hash_pw(new)}
-        ).eq("id", user_id).execute()
+        # Re-verify the current password before allowing a change.
+        if email:
+            client.auth.sign_in_with_password({"email": email, "password": current})
+        client.auth.update_user({"password": new})
     except Exception:
-        return False, "Couldn't reach the database. Please try again in a moment."
+        return False, "Your current password isn't right."
 
     return True, "Password updated."
 
 
 def sign_out() -> None:
     """Drop the whole session so nothing leaks into the next account."""
+    try:
+        if "sb_client" in st.session_state:
+            st.session_state["sb_client"].auth.sign_out()
+    except Exception:
+        pass
     st.session_state.clear()
     st.cache_data.clear()
     st.rerun()

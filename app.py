@@ -11,6 +11,7 @@ import oura
 import oura_ui
 import connections_ui  # MIR-3: provider framework (Spotify, Whoop, …)
 from oura import user_today
+import auth
 from auth import render_login_page, render_logout_button
 from intro_page import render_intro_page, user_has_seen_intro
 from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
@@ -347,12 +348,19 @@ textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 
 
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-@st.cache_resource
 def get_supabase():
+    """
+    Supabase client for THIS browser session.
+
+    Deliberately NOT @st.cache_resource: a cached client is shared by every
+    visitor of the deployment, so once identity moved to Supabase Auth (MIR-56),
+    one user's auth session stored on it would be handed to everyone else.
+    auth.py owns the per-session client; this stays a thin wrapper so the rest of
+    app.py is untouched. Requests now carry the signed-in user's JWT, which is
+    exactly what RLS matches on.
+    """
     try:
-        url = st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("SUPABASE_KEY")
-        client = create_client(url, key)
+        client = auth.get_client()
         # quick connectivity check (non-destructive)
         try:
             client.table("users").select("id").limit(1).execute()
