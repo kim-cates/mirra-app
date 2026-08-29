@@ -352,12 +352,34 @@ begin
   end loop;
 end $$;
 
+-- Policies are permissive and OR together: one hand-made "allow all" policy
+-- left over from the dashboard (oura_daily / oura_oauth_states had them) makes
+-- RLS a no-op for that table. Only the "<table>: <cmd> own" policies may exist.
+do $$
+declare p record;
+begin
+  for p in select schemaname, tablename, policyname
+             from pg_policies
+            where schemaname = 'public'
+              and policyname not like '%: % own'
+  loop
+    execute format('drop policy %I on %I.%I', p.policyname, p.schemaname, p.tablename);
+  end loop;
+end $$;
+
 -- Legacy table from the first Oura spike: RLS on, no policies, nothing reads it.
 alter table if exists public.oura_tokens enable row level security;
 
 commit;
 
--- ── Verify ─────────────────────────────────────────────────────────────────
---   select tablename, rowsecurity from pg_tables where schemaname = 'public';  -- all true
---   select count(*) from public.users;   -- = select count(*) from auth.users
--- With the anon key and no session, every table must return 0 rows.
+-- ── Verify (this is what the SQL editor shows after Run) ───────────────────
+-- Every public table with rowsecurity = true and only "<table>: <cmd> own"
+-- policies. With the anon key and no session, every table returns 0 rows.
+select t.tablename,
+       t.rowsecurity,
+       coalesce(string_agg(p.policyname, ', ' order by p.policyname), '(none)') as policies
+  from pg_tables t
+  left join pg_policies p on p.schemaname = t.schemaname and p.tablename = t.tablename
+ where t.schemaname = 'public'
+ group by t.tablename, t.rowsecurity
+ order by t.tablename;
