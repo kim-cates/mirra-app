@@ -340,7 +340,27 @@ textarea:focus, input:focus { border-color: #3dab7a !important; box-shadow: 0 0 
         grid-template-columns: 1fr !important;
     }
     .insight-card { padding: 0.9rem 1rem; font-size: 0.92rem; }
-    .section-label { margin-top: 1.4rem; }
+
+    /* MIR-5 #42, measured at 390px:
+
+       - Section labels rendered at 11.5px. Uppercase with 0.14em tracking is
+         already low-legibility, and under 12px on a phone it reads as noise.
+       - st.columns doesn't stack side by side at this width, so the [10, 1]
+         mood row drops the read-out onto its own line — where the inline
+         padding-top:18px (meant to align it with the slider) turns into a
+         floating orphan number. The slider's own thumb badge already shows
+         the value, so shrink the duplicate and pull it back up rather than
+         leaving a hole in the page.
+       - Same stacking hits the [2, 2, 6] feelings rows: name, skip and slider
+         each take a line, so tighten their vertical rhythm to keep a handful
+         of feelings scannable without endless scrolling. */
+    .section-label { margin-top: 1.4rem; font-size: 0.78rem; letter-spacing: 0.1em; }
+    .mood-value {
+        padding-top: 0 !important;  /* beats the inline style on the element */
+        font-size: 1.25rem; margin-top: -0.6rem;
+    }
+    .feeling-name { padding-top: 0; margin-bottom: -0.4rem; }
+    [data-testid="stCheckbox"] { margin-bottom: -0.3rem; }
 }
 </style>
 """, unsafe_allow_html=True)
