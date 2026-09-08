@@ -30,8 +30,8 @@ The app does not need fifty fields. It needs a few axes a person recognises abou
 |---|---|---|
 | **Oura** | shipped | `oura.py`, own pre-MIR-3 code path |
 | **Spotify** | shipped | `providers/spotify.py`; audio-features (valence/energy) are closed to apps created after 2024-11-27, so mood-from-music is NOT available — only volume/timing |
-| **Whoop** | in progress | OAuth handshake done; `sync()` + `whoop_daily` is the current task. Needs a developer app + client credentials |
-| **Fitbit** | next | Web API with OAuth 2.0 PKCE; sleep / steps / HR / HRV. Verify current scope + intraday-approval rules before building |
+| **Whoop** | code shipped | API v2, `sync()` -> `whoop_daily`. Blocked on a developer app + `WHOOP_CLIENT_*` secrets before it can run against a real account |
+| **Fitbit** | code shipped | `sync()` -> `fitbit_daily`: sleep stages, resting HR, HRV, steps. Same blocker: a registered app + `FITBIT_CLIENT_*` secrets |
 | **Garmin** | parked | Health API is partner-approval only; unpredictable lead time |
 | **Apple Watch** | blocked by design | No cloud API exists. HealthKit is on-device iOS only. Three workarounds: (a) our own iOS companion, (b) a user-installed exporter app posting to our endpoint, (c) an aggregator with a mobile SDK. All three are product decisions, not a connector |
 | **Google Fit / Android** | blocked by design | Fit REST API retired; Health Connect is on-device Android only. Same three workarounds |
@@ -58,8 +58,8 @@ own an Apple Watch. Do not start a native mobile app for the MVP.
 ## Track order agreed on the call (2026-09-07)
 
 1. This map — grows as connectors land, not a separate research phase.
-2. **Whoop `sync()`** — in `feature/connectors-whoop-fitbit`.
-3. **Fitbit connector** — same branch, after Whoop.
+2. **Whoop `sync()`** — done, `feature/connectors-whoop-fitbit`.
+3. **Fitbit connector** — done, same branch. Both need vendor apps registered before a live run.
 4. **Voice-to-text reflections** — parallel session, `feature/voice-to-text-reflections`.
 5. **PWA / mobile polish** — deliberately last, right before MVP: it is tangled with design and
    flow, and building it now means rebuilding it after Kim's UI blueprint.
