@@ -235,6 +235,14 @@ def render_sync_section(supabase, user_id: str, provider_key: str,
             unsafe_allow_html=True,
         )
 
+    missing = _missing_scopes(db, user_id, meta)
+    if missing:
+        st.warning(
+            f"This {meta.label} connection was authorized without "
+            f"`{'`, `'.join(missing)}`, so syncing will fail. Reconnect and accept "
+            "the consent screen."
+        )
+
     n_days = _stored_day_count(db, user_id, meta.data_table)
     if n_days is not None:
         st.markdown(
@@ -270,6 +278,27 @@ def render_sync_section(supabase, user_id: str, provider_key: str,
         )
 
 
+def _missing_scopes(db, user_id: str, meta) -> list[str]:
+    """Scopes we asked for that the stored grant doesn't carry.
+
+    Distinguishes the two things a Spotify 403 can mean. If this is empty the
+    grant is fine and a refusal is the vendor's own gate (an app still in
+    Development Mode won't serve an account that isn't on its allowlist), which
+    no amount of reconnecting will fix.
+    """
+    try:
+        res = (db.table("connections").select("scopes")
+               .eq("user_id", user_id).eq("provider", meta.key).execute())
+    except Exception:
+        return []
+    rows = res.data or []
+    granted = (rows[0].get("scopes") or "") if rows else ""
+    if not granted:
+        return []  # vendor didn't report scopes — can't conclude anything
+    have = set(granted.split())
+    return [s for s in meta.default_scopes.split() if s not in have]
+
+
 def _stored_day_count(db, user_id: str, table: str) -> Optional[int]:
     """How many daily rows this user has in `table`, or None if unreadable."""
     try:
@@ -296,9 +325,11 @@ def _do_sync(db, user_id: str, provider_key: str, *, days_back: int) -> None:
         with st.spinner(f"Syncing {days_back} days from {label}…"):
             n = provider.sync(supabase=db, user_id=user_id,
                               access_token=token, days_back=days_back)
-    except ProviderAuthError:
+    except ProviderAuthError as e:
         # get_valid_token/sync already flagged the connection as needs_reauth.
-        st.error(f"{label} access expired. Use Reconnect to authorize again.")
+        # Show the vendor's own reason — "expired" and "your account isn't on the
+        # app's allowlist" both land here and need very different fixes.
+        st.error(f"{label}: {e}")
         return
     except ProviderRateLimitError:
         st.warning(f"{label} rate limit hit. Try again in a few minutes.")
