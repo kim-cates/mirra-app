@@ -49,9 +49,24 @@ SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 REQUEST_TIMEOUT = 15
+# `/me/player/recently-played` returns 50 items per call, so a multi-week
+# backfill has to page. Spotify retains ~50 plays for most accounts, so this is
+# an upper bound we rarely reach — it just stops a pathological loop.
+MAX_HISTORY_PAGES = 10
 
 # Attribute a play to the user's local calendar day (matches oura.py convention).
 DEFAULT_USER_TZ = "Pacific/Honolulu"
+
+
+def _played_at_ms(played_at: Optional[str]) -> Optional[int]:
+    """`played_at` (ISO-8601 UTC) as epoch milliseconds, or None if unparseable."""
+    if not played_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(played_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(dt.timestamp() * 1000)
 
 
 def _raise_for_token_resp(resp: requests.Response) -> None:
@@ -126,6 +141,7 @@ class SpotifyProvider(OAuthProvider):
         icon="🎵",
         supports_pat=False,
         docs_url="https://developer.spotify.com/dashboard",
+        data_table="spotify_daily",
     )
 
     # ── Handshake ────────────────────────────────────────────────────────────
@@ -196,21 +212,74 @@ class SpotifyProvider(OAuthProvider):
                 rows, on_conflict="user_id,entry_date").execute()
         return len(rows)
 
-    def _fetch_recently_played(self, access_token: str, days_back: int) -> list[dict]:
-        after_ms = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp() * 1000)
+    def _fetch_recently_played(self, access_token: str, days_back: int,
+                               *, max_pages: int = MAX_HISTORY_PAGES) -> list[dict]:
+        """
+        Every play inside the last `days_back` days that Spotify will still hand
+        back, walking backwards with the `before` cursor.
+
+        Paging matters for the "Sync last 30 days" button: one call caps at 50
+        items, which for an active listener is barely two days. Spotify still
+        only retains ~50 plays for most accounts, so the loop usually ends on the
+        first empty page — it just no longer *guarantees* a two-day window.
+        """
+        cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp() * 1000)
+        before = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        items: list[dict] = []
+        seen: set[tuple] = set()
+        for _ in range(max_pages):
+            payload = self._recently_played_page(access_token, before=before)
+            page = payload.get("items") or []
+            if not page:
+                break
+
+            oldest_ms = None
+            hit_cutoff = False
+            for it in page:
+                played_ms = _played_at_ms(it.get("played_at"))
+                if played_ms is None:
+                    continue
+                if played_ms < cutoff_ms:
+                    hit_cutoff = True
+                    continue
+                oldest_ms = played_ms if oldest_ms is None else min(oldest_ms, played_ms)
+                dedupe_key = (it.get("played_at"), (it.get("track") or {}).get("id"))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                items.append(it)
+
+            if hit_cutoff or oldest_ms is None:
+                break
+            # `cursors.before` is Spotify's own "give me the next older page"
+            # timestamp; fall back to the oldest play we just saw.
+            cursor = (payload.get("cursors") or {}).get("before")
+            next_before = int(cursor) if cursor else oldest_ms
+            if next_before >= before:   # no progress — stop rather than loop
+                break
+            before = next_before
+        return items
+
+    def _recently_played_page(self, access_token: str, *, before: int) -> dict:
         resp = requests.get(
             f"{SPOTIFY_API_BASE}/me/player/recently-played",
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"limit": 50, "after": after_ms},
+            params={"limit": 50, "before": before},
             timeout=REQUEST_TIMEOUT,
         )
         if resp.status_code == 401:
             raise ProviderAuthError("Spotify token rejected (401). Reconnect required.")
+        if resp.status_code == 403:
+            raise ProviderAuthError(
+                "Spotify refused the listening history (403). Reconnect to grant "
+                "the `user-read-recently-played` scope."
+            )
         if resp.status_code == 429:
             raise ProviderRateLimitError("Spotify rate limit (429). Back off and retry.")
         if not resp.ok:
             raise ProviderError(f"Spotify recently-played {resp.status_code}: {resp.text[:200]}")
-        return resp.json().get("items", [])
+        return resp.json()
 
     def _fetch_audio_features(self, access_token: str,
                               items: list[dict]) -> Optional[dict[str, dict]]:
