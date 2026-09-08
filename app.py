@@ -1898,6 +1898,11 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
                         key=f"soon_{app_card['name'].lower()}",
                     )
 
+    # Sync / reconnect / disconnect for the connected framework providers, the
+    # same controls Oura gets below in oura_ui.render_settings_tab. No-ops when
+    # Spotify isn't configured or isn't connected.
+    connections_ui.render_sync_section(supabase, user_id, "spotify")
+
 
 def render_dendrogram_tab(rows, oura_by_date):
     st.markdown('<p class="title-text">Phrase Dendrogram</p>', unsafe_allow_html=True)
