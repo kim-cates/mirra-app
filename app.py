@@ -18,6 +18,8 @@ from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
 from onboarding import should_run_onboarding
 from profile_form import render_profile_form, user_has_completed_profile
 from profile_tab import render_profile_tab
+from simples import render_simples_tab
+from personalized_insights import render_personalized_insights_tab
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -3876,10 +3878,12 @@ oura_by_date = oura.load_oura_for_user(supabase, user_id)
 
 # Connections and the Oura settings both live inside Profile now — one place
 # the user manages "my stuff", instead of three tabs that each own a slice of it.
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "Daily Reflection",
     "Weekly Insights",
     "Reflection Trends",
+    "Simples",
+    "Personalized Insights",
     "Topic Map",
     "Dendrogram",
     "Profile",
@@ -3895,10 +3899,16 @@ with tab3:
     render_reflection_trends_tab(rows, oura_by_date)
 
 with tab4:
-    render_bertopic_tab(rows, oura_by_date)
+    render_simples_tab(supabase, user_id)
 
 with tab5:
-    render_dendrogram_tab(rows, oura_by_date)
+    render_personalized_insights_tab(supabase, user_id)
 
 with tab6:
+    render_bertopic_tab(rows, oura_by_date)
+
+with tab7:
+    render_dendrogram_tab(rows, oura_by_date)
+
+with tab8:
     render_profile_tab(supabase, user_id, render_connections=render_connections_tab)
