@@ -69,6 +69,24 @@ def _played_at_ms(played_at: Optional[str]) -> Optional[int]:
     return int(dt.timestamp() * 1000)
 
 
+def _error_message(resp: requests.Response) -> str:
+    """Spotify's own explanation for a failure, not just the status code.
+
+    Errors come back as {"error": {"status": .., "message": ".."}}; that message
+    is the only thing that distinguishes "user not registered in the Developer
+    Dashboard" from "insufficient client scope", which need different fixes.
+    """
+    try:
+        err = (resp.json() or {}).get("error")
+    except ValueError:
+        err = None
+    if isinstance(err, dict) and err.get("message"):
+        return str(err["message"])
+    if isinstance(err, str) and err:
+        return err
+    return (resp.text or "no detail").strip()[:200]
+
+
 def _raise_for_token_resp(resp: requests.Response) -> None:
     if resp.status_code in (400, 401):
         raise ProviderAuthError(f"Spotify token request rejected: {resp.text[:200]}")
@@ -272,8 +290,12 @@ class SpotifyProvider(OAuthProvider):
             raise ProviderAuthError("Spotify token rejected (401). Reconnect required.")
         if resp.status_code == 403:
             raise ProviderAuthError(
-                "Spotify refused the listening history (403). Reconnect to grant "
-                "the `user-read-recently-played` scope."
+                f"Spotify refused the listening history (403): {_error_message(resp)}. "
+                "Two usual causes: the app is still in Development Mode and this "
+                "Spotify account is not on its allowlist (Dashboard → your app → "
+                "User Management → Add user, using the account's Spotify email), or "
+                "the grant is missing the user-read-recently-played scope (Reconnect "
+                "and accept the consent screen)."
             )
         if resp.status_code == 429:
             raise ProviderRateLimitError("Spotify rate limit (429). Back off and retry.")
