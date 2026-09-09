@@ -187,11 +187,9 @@ def _render_connected_state(supabase, user_id: str, creds: dict) -> None:
     # stale or revoked grant is exactly when you need it most.
     reconnect_url = oauth_authorize_url(supabase, user_id) if creds["auth_type"] == "oauth" else None
 
-    if reconnect_url:
-        col_sync_7, col_sync_30, col_reconnect, col_disconnect = st.columns([1, 1, 1, 1])
-    else:
-        col_sync_7, col_sync_30, col_disconnect = st.columns([1, 1, 1])
-        col_reconnect = None
+    # Two rows: the syncs together, then the connection controls. Squeezing all
+    # five into one row left the labels truncated on a laptop width.
+    col_sync_7, col_sync_30, col_sync_all = st.columns([1, 1, 1])
 
     with col_sync_7:
         if st.button("Sync last 7 days", use_container_width=True):
@@ -201,9 +199,18 @@ def _render_connected_state(supabase, user_id: str, creds: dict) -> None:
         if st.button("Sync last 30 days", use_container_width=True):
             _do_sync(supabase, user_id, creds, days_back=30)
 
-    if col_reconnect is not None:
+    with col_sync_all:
+        if st.button("Sync all history", use_container_width=True,
+                     help="Fetch everything Oura still holds for your account, "
+                          "back to your first day with the ring. Takes a minute."):
+            _do_full_sync(supabase, user_id, creds)
+
+    if reconnect_url:
+        col_reconnect, col_disconnect = st.columns([1, 1])
         with col_reconnect:
             st.link_button("Reconnect", reconnect_url, use_container_width=True)
+    else:
+        (col_disconnect,) = st.columns(1)
 
     with col_disconnect:
         if st.button("Disconnect", use_container_width=True):
@@ -212,12 +219,19 @@ def _render_connected_state(supabase, user_id: str, creds: dict) -> None:
             st.rerun()
 
 
+def _valid_token(supabase, user_id: str, creds: dict) -> str | None:
+    """A usable access token, refreshing the OAuth one if it's near expiry."""
+    is_oauth = creds["auth_type"] == "oauth"
+    return oura.get_valid_token(
+        supabase, user_id,
+        st.secrets.get("OURA_CLIENT_ID") if is_oauth else None,
+        st.secrets.get("OURA_CLIENT_SECRET") if is_oauth else None,
+    )
+
+
 def _do_sync(supabase, user_id: str, creds: dict, days_back: int) -> None:
     try:
-        # For OAuth, this auto-refreshes if needed
-        client_id = st.secrets.get("OURA_CLIENT_ID") if creds["auth_type"] == "oauth" else None
-        client_secret = st.secrets.get("OURA_CLIENT_SECRET") if creds["auth_type"] == "oauth" else None
-        token = oura.get_valid_token(supabase, user_id, client_id, client_secret)
+        token = _valid_token(supabase, user_id, creds)
         if not token:
             st.error("No valid token found.")
             return
@@ -232,6 +246,54 @@ def _do_sync(supabase, user_id: str, creds: dict, days_back: int) -> None:
         st.warning("Oura rate limit hit. Try again in a few minutes.")
     except oura.OuraError as e:
         st.error(f"Sync failed: {e}")
+
+
+def _do_full_sync(supabase, user_id: str, creds: dict) -> None:
+    """Pull the user's whole Oura history, one window at a time.
+
+    Each window is upserted as it arrives, so an error part way through keeps
+    whatever was already fetched — the failure messages say so, because
+    "rate limited" after 8 of 12 years should not read as "nothing happened".
+    """
+    token = _valid_token(supabase, user_id, creds)
+    if not token:
+        st.error("No valid token found.")
+        return
+
+    windows = oura.history_windows()
+    status = st.status(f"Fetching your Oura history — {len(windows)} periods to "
+                       f"check, back to {oura.EARLIEST_OURA_DATA:%Y}…", expanded=True)
+    bar = status.progress(0.0)
+
+    def on_progress(done: int, total: int, label: str) -> None:
+        bar.progress(done / total if total else 1.0,
+                     text=f"{label}  ({done}/{total})")
+
+    try:
+        n = oura.sync_oura_all(supabase, user_id, token, progress=on_progress)
+    except oura.OuraAuthError:
+        status.update(label="Oura rejected the token part way through.", state="error")
+        st.error("Oura token is no longer valid. Please reconnect, then try again. "
+                 "Anything fetched before the failure was saved.")
+        return
+    except oura.OuraRateLimitError:
+        status.update(label="Oura rate limit hit part way through.", state="error")
+        st.warning("Oura rate limit hit. Everything fetched so far was saved — "
+                   "wait a few minutes and run it again to pick up the rest.")
+        st.cache_data.clear()
+        return
+    except oura.OuraError as e:
+        status.update(label="History sync stopped early.", state="error")
+        st.error(f"Sync failed: {e}. Anything fetched before the failure was saved.")
+        st.cache_data.clear()
+        return
+
+    status.update(label=f"Synced {n} day(s) of Oura history ✓", state="complete")
+    if n == 0:
+        st.info("Oura returned no days at all. If you've worn the ring, check that "
+                "the connection has the `daily` scope — Reconnect re-grants it.")
+    st.cache_data.clear()
+    st.rerun()
 
 
 def _render_disconnected_state(supabase, user_id: str) -> None:
