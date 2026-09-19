@@ -34,6 +34,17 @@ DEFAULT_SCOPES = "personal daily heartrate workout session spo2 ring_configurati
 
 REQUEST_TIMEOUT = 15  # seconds
 
+# ── Full-history sync ─────────────────────────────────────────────────────────
+# Oura Gen 1 shipped in 2015, so nothing in the API predates it. This is the
+# floor for "sync everything" — it bounds the walk without needing to know when
+# the user actually got their ring.
+EARLIEST_OURA_DATA = date(2015, 1, 1)
+# One request per endpoint per window. Small enough that a window rarely needs
+# paging, large enough that a decade is ~12 windows rather than hundreds.
+HISTORY_CHUNK_DAYS = 365
+# Guard against an unbounded pagination loop (see _get_all).
+MAX_PAGES_PER_REQUEST = 50
+
 # ── User timezone ─────────────────────────────────────────────────────────────
 # Server (Streamlit Cloud, most hosts) typically runs in UTC, so date.today()
 # can be a full day ahead of the user. Oura tags sleep sessions by the user's
@@ -79,6 +90,33 @@ def _get(path: str, token: str, params: Optional[dict] = None) -> dict:
         raise OuraError(f"Oura {resp.status_code}: {resp.text[:200]}")
 
     return resp.json()
+
+
+def _get_all(path: str, token: str, params: Optional[dict] = None,
+             *, max_pages: int = MAX_PAGES_PER_REQUEST) -> list[dict]:
+    """Every record for a query, following Oura's `next_token` pagination.
+
+    Oura returns one page plus a `next_token` when more is available, so a
+    single `_get` silently comes back short on any range bigger than a page —
+    no error, just missing days. A 7- or 30-day sync never hits that, which is
+    why it went unnoticed; a full-history sync would have lost most of the
+    record. `/sleep` is the first to page, since it returns one row per sleep
+    period rather than per day.
+    """
+    query = dict(params or {})
+    items: list[dict] = []
+    for _ in range(max_pages):
+        payload = _get(path, token, query)
+        items.extend(payload.get("data") or [])
+        next_token = payload.get("next_token")
+        if not next_token:
+            return items
+        query["next_token"] = next_token
+    # Better to say so than to hand back a quietly truncated history.
+    raise OuraError(
+        f"Oura {path}: still paginating after {max_pages} pages. "
+        f"Sync a narrower range."
+    )
 
 
 # ── OAuth flow ────────────────────────────────────────────────────────────────
@@ -249,11 +287,12 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
     """
     params = {"start_date": start.isoformat(), "end_date": end.isoformat()}
 
-    # One API call per endpoint, covering the whole range
-    sleep_resp     = _get("daily_sleep", token, params)
-    readiness_resp = _get("daily_readiness", token, params)
-    activity_resp  = _get("daily_activity", token, params)
-    detailed_resp  = _get("sleep", token, params)  # detailed sleep periods
+    # One call per endpoint for the whole range, plus however many pages Oura
+    # splits it into — see _get_all. Still ~4x fewer calls than going per-day.
+    sleep_items     = _get_all("daily_sleep", token, params)
+    readiness_items = _get_all("daily_readiness", token, params)
+    activity_items  = _get_all("daily_activity", token, params)
+    detailed_items  = _get_all("sleep", token, params)  # detailed sleep periods
 
     # Index by date
     by_date: dict[str, dict] = {}
@@ -263,7 +302,7 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
             by_date[d] = {"entry_date": d, "raw": {}}
         return by_date[d]
 
-    for item in sleep_resp.get("data", []):
+    for item in sleep_items:
         d = item.get("day")
         if not d:
             continue
@@ -271,7 +310,7 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
         row["sleep_score"] = item.get("score")
         row["raw"]["daily_sleep"] = item
 
-    for item in readiness_resp.get("data", []):
+    for item in readiness_items:
         d = item.get("day")
         if not d:
             continue
@@ -279,7 +318,7 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
         row["readiness_score"] = item.get("score")
         row["raw"]["daily_readiness"] = item
 
-    for item in activity_resp.get("data", []):
+    for item in activity_items:
         d = item.get("day")
         if not d:
             continue
@@ -302,7 +341,7 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
     # in a UTC-behind timezone (e.g. HST) can land a day late in the row map.
     user_tz = ZoneInfo(DEFAULT_USER_TZ)
     sleep_by_day: dict[str, list[dict]] = {}
-    for item in detailed_resp.get("data", []):
+    for item in detailed_items:
         wake_iso = item.get("bedtime_end")
         if wake_iso:
             try:
@@ -342,6 +381,20 @@ def fetch_oura_range(token: str, start: date, end: date) -> dict[str, dict]:
     return by_date
 
 
+def _upsert_days(supabase, user_id: str, by_date: dict[str, dict]) -> int:
+    """Write one batch of fetched days. Returns how many rows were written."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for payload in by_date.values():
+        payload["user_id"] = user_id
+        payload["fetched_at"] = now
+        rows.append(payload)
+
+    if rows:
+        supabase.table("oura_daily").upsert(rows, on_conflict="user_id,entry_date").execute()
+    return len(rows)
+
+
 def sync_oura(supabase, user_id: str, token: str, days_back: int = 7) -> int:
     """
     Fetch the last N days of Oura data and upsert to Supabase.
@@ -352,17 +405,55 @@ def sync_oura(supabase, user_id: str, token: str, days_back: int = 7) -> int:
     """
     today = user_today()
     start = today - timedelta(days=days_back - 1)
-    by_date = fetch_oura_range(token, start, today)
+    return _upsert_days(supabase, user_id, fetch_oura_range(token, start, today))
 
-    rows = []
-    for d, payload in by_date.items():
-        payload["user_id"] = user_id
-        payload["fetched_at"] = datetime.now(timezone.utc).isoformat()
-        rows.append(payload)
 
-    if rows:
-        supabase.table("oura_daily").upsert(rows, on_conflict="user_id,entry_date").execute()
-    return len(rows)
+def history_windows(earliest: date = EARLIEST_OURA_DATA,
+                    today: Optional[date] = None,
+                    chunk_days: int = HISTORY_CHUNK_DAYS) -> list[tuple[date, date]]:
+    """Split `earliest`..today into consecutive, non-overlapping fetch windows.
+
+    Fixed windows rather than "walk back until a stretch comes up empty": not
+    wearing the ring for a few months is ordinary, and a stop-on-empty rule
+    would cut the history off at the first such gap and call it the beginning.
+    An empty window costs one request per endpoint and returns immediately.
+    """
+    today = today or user_today()
+    if earliest > today:
+        return []
+    windows: list[tuple[date, date]] = []
+    cursor = earliest
+    while cursor <= today:
+        window_end = min(cursor + timedelta(days=chunk_days - 1), today)
+        windows.append((cursor, window_end))
+        cursor = window_end + timedelta(days=1)
+    return windows
+
+
+def sync_oura_all(supabase, user_id: str, token: str, *,
+                  earliest: date = EARLIEST_OURA_DATA,
+                  chunk_days: int = HISTORY_CHUNK_DAYS,
+                  progress=None) -> int:
+    """
+    Fetch every day Oura still holds for this user and upsert it. Returns the
+    number of days written.
+
+    Each window is written as it arrives rather than accumulated and saved at
+    the end, so a rate limit or a dropped connection half way through leaves
+    the history it already fetched in place — rerunning picks up the rest.
+
+    `progress(done, total, label)` is called before each window so the caller
+    can show where it is; a decade of history is not an instant operation.
+    """
+    windows = history_windows(earliest, user_today(), chunk_days)
+    written = 0
+    for index, (start, end) in enumerate(windows):
+        if progress:
+            progress(index, len(windows), f"{start:%b %Y} – {end:%b %Y}")
+        written += _upsert_days(supabase, user_id, fetch_oura_range(token, start, end))
+    if progress:
+        progress(len(windows), len(windows), "done")
+    return written
 
 
 def validate_token(token: str) -> dict:

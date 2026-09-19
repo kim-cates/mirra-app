@@ -90,6 +90,10 @@ class ProviderMeta:
     icon: str = "🔗"               # emoji/placeholder until real assets land
     supports_pat: bool = False     # Oura=True; most vendors OAuth-only
     docs_url: str = ""             # where to get a client id/secret
+    # Normalized table `sync()` writes into ("spotify_daily"). Empty until a
+    # provider's sync() lands; the Connections page uses it to show how much
+    # data is stored and to offer manual backfills, so it stays provider-driven.
+    data_table: str = ""
 
 
 @dataclass(frozen=True)
