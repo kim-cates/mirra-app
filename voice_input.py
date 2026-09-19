@@ -124,6 +124,30 @@ def audio_fingerprint(audio: bytes) -> str:
 
 # ── Streamlit UI ─────────────────────────────────────────────────────────────
 
+# Scoped to the audio widget only — nothing else in the app is touched.
+# Round, bigger, unmissable record button in Mirra's accent green; the same
+# style carries over to the play button after a take, which keeps the widget
+# consistent. #3dab7a / #2a8a5e are the app's primary greens (see app.py CSS).
+_MIC_CSS = """
+<style>
+div[data-testid="stAudioInput"] { min-height: 3.8rem; }
+div[data-testid="stAudioInput"] button[data-testid="stAudioInputActionButton"] {
+    width: 3.2rem; height: 3.2rem; min-width: 3.2rem;
+    border-radius: 50%;
+    background: #3dab7a; color: #ffffff; border: none;
+    box-shadow: 0 2px 10px rgba(61, 171, 122, 0.35);
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+div[data-testid="stAudioInput"] button[data-testid="stAudioInputActionButton"]:hover {
+    background: #2a8a5e; color: #ffffff; transform: scale(1.06);
+}
+div[data-testid="stAudioInput"] button[data-testid="stAudioInputActionButton"] svg {
+    width: 1.5rem; height: 1.5rem;
+}
+</style>
+"""
+
+
 def render_voice_input(transcriber: Optional[Transcriber],
                        key: str = "voice_reflection") -> Optional[str]:
     """Mic widget; returns a NEW transcript once per recording, else None.
@@ -137,6 +161,7 @@ def render_voice_input(transcriber: Optional[Transcriber],
     if transcriber is None:
         return None  # backend not chosen yet — app looks unchanged
 
+    st.markdown(_MIC_CSS, unsafe_allow_html=True)
     audio = st.audio_input(
         "Or record it — your words land in the box above as text",
         key=f"{key}_audio",
