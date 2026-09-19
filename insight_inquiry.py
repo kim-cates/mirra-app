@@ -12,12 +12,22 @@ Flow per question (Igor's note #1, building on Kim's #43 design):
 Questions, categories and suggestion links live in config lists below so the
 founders can add/reword them without touching logic.
 
-Storage: answers are collected into a plain dict and handed to
+Storage: answers accumulate in ``st.session_state[_DRAFT_KEY]`` as they are
+typed, and ``collect_responses`` hands that dict to
 ``save_inquiry_responses``, which writes ``users.inquiry_responses`` (jsonb)
 plus the ``users.inquiry_completed_at`` marker that stops the onboarding
 chain from replaying on the next sign-in. The target table is still being
 aligned with MIR-2's goals schema (issue #20); when it lands, the jsonb
 column gets backfilled and these two functions are the only place to change.
+
+Why a draft dict instead of just reading the widgets at save time: Streamlit
+garbage-collects a widget's session_state entry once the widget stops being
+rendered — one rerun of grace, then it is gone. This wizard shows one question
+per page, so by the time "Save my answers" runs, every page except the last has
+already been culled, and reading the widget keys yields empty strings. That is
+exactly what used to reach the database: every answer blank, only the final
+page's ``period`` intact. The widgets are the input surface; this dict is the
+storage.
 """
 
 from datetime import datetime, timezone
@@ -111,6 +121,32 @@ FOCUS_PERIODS = ["1 week", "2 weeks", "1 month"]
 
 _STATE_KEY = "insight_inquiry_responses"
 _STEP_KEY = "inquiry_step"
+# Answers-so-far, outside widget state so Streamlit's widget cleanup can't take
+# them (see the module docstring). Named with the "inquiry_" prefix so
+# preview_inquiry.py's reset button clears it along with the widget keys.
+_DRAFT_KEY = "inquiry_draft"
+# Whether this session has passed the inquiry gate. Kept separate from
+# _STATE_KEY: overloading the answers key as a completion flag is what used to
+# turn "we could not read your answers" into "you have no answers".
+_COMPLETED_KEY = "insight_inquiry_completed"
+
+
+def _draft() -> dict:
+    """The wizard's own copy of the answers, keyed outside widget state."""
+    draft = st.session_state.get(_DRAFT_KEY)
+    if not isinstance(draft, dict):
+        draft = {}
+        st.session_state[_DRAFT_KEY] = draft
+    return draft
+
+
+def _widget_keys(question_key: str) -> tuple[str, str, str]:
+    """The (text, categories, focus) widget keys for one question."""
+    return (
+        f"inquiry_text_{question_key}",
+        f"inquiry_cats_{question_key}",
+        f"inquiry_focus_{question_key}",
+    )
 
 
 def category_options(question: dict, selected: list[str]) -> list[str]:
@@ -130,34 +166,45 @@ def category_options(question: dict, selected: list[str]) -> list[str]:
 
 
 def collect_responses() -> dict:
-    """Read widget values → per-question answers + final priorities block."""
+    """Per-question answers + the final priorities block, ready to save.
+
+    Reads the draft, never the widgets: at save time only the last page's
+    widgets still exist.
+    """
+    draft = _draft()
     responses = {}
     for q in INQUIRY_QUESTIONS:
-        selected = st.session_state.get(f"inquiry_cats_{q['key']}", [])
-        focus = st.session_state.get(f"inquiry_focus_{q['key']}", [])
+        answer = draft.get(q["key"]) or {}
+        selected = list(answer.get("categories", []))
+        focus = answer.get("focus", [])
         responses[q["key"]] = {
-            "text": st.session_state.get(f"inquiry_text_{q['key']}", "").strip(),
+            "text": (answer.get("text") or "").strip(),
             "categories": selected,
             "focus": [f for f in focus if f in selected][:FOCUS_LIMIT],
         }
+    priorities = draft.get("_priorities") or {}
     responses["_priorities"] = {
-        "top": st.session_state.get("inquiry_priorities", [])[:PRIORITY_LIMIT],
-        "period": st.session_state.get("inquiry_period", FOCUS_PERIODS[-1]),
+        "top": list(priorities.get("top", []))[:PRIORITY_LIMIT],
+        "period": priorities.get("period", FOCUS_PERIODS[-1]),
     }
     return responses
 
 
 def _all_selected_categories() -> list[str]:
-    """Union of everything the user picked, focus selections first."""
+    """Union of everything the user picked, focus selections first.
+
+    From the draft, not the widgets — the priorities page is the last step, so
+    every question's widgets are gone by then. Reading them is why this list
+    used to come up empty however much the user had selected, leaving the
+    priorities multiselect with no options to offer.
+    """
+    draft = _draft()
     picked: list[str] = []
-    for q in INQUIRY_QUESTIONS:
-        for item in st.session_state.get(f"inquiry_focus_{q['key']}", []):
-            if item not in picked:
-                picked.append(item)
-    for q in INQUIRY_QUESTIONS:
-        for item in st.session_state.get(f"inquiry_cats_{q['key']}", []):
-            if item not in picked:
-                picked.append(item)
+    for field in ("focus", "categories"):
+        for q in INQUIRY_QUESTIONS:
+            for item in (draft.get(q["key"]) or {}).get(field, []):
+                if item not in picked:
+                    picked.append(item)
     return picked
 
 
@@ -170,21 +217,26 @@ def save_inquiry_responses(supabase, user_id: str, responses: dict) -> bool:
     and dropped. Session state is the pre-migration fallback.
     """
     st.session_state[_STATE_KEY] = responses
+    st.session_state[_COMPLETED_KEY] = True
     if supabase is None:
         return False
     try:
-        supabase.table("users").update({
+        res = supabase.table("users").update({
             "inquiry_responses": responses,
             "inquiry_completed_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", user_id).execute()
-        return True
     except Exception:
         return False  # pre-migration — session fallback keeps the flow working
+    # An UPDATE matching no row is a 200 with an empty body, not an error, so
+    # RLS filtering the row out is indistinguishable from success unless we look
+    # at what came back. postgrest-py asks for the updated representation by
+    # default, so an empty list means nothing was written.
+    return bool(getattr(res, "data", None))
 
 
 def mark_inquiry_completed(supabase, user_id: str) -> None:
     """Record that the user passed the inquiry screen (e.g. skipped it)."""
-    st.session_state.setdefault(_STATE_KEY, {})
+    st.session_state[_COMPLETED_KEY] = True
     if supabase is None:
         return
     try:
@@ -214,6 +266,8 @@ def user_has_completed_inquiry(supabase, user_id: str) -> bool:
     Reads users.inquiry_completed_at, with session state as the
     pre-migration fallback.
     """
+    if st.session_state.get(_COMPLETED_KEY):
+        return True
     if st.session_state.get(_STATE_KEY) is not None:
         return True
     if supabase is not None:
@@ -221,7 +275,11 @@ def user_has_completed_inquiry(supabase, user_id: str) -> bool:
             res = (supabase.table("users").select("inquiry_completed_at")
                    .eq("id", user_id).limit(1).execute())
             if res.data and res.data[0].get("inquiry_completed_at"):
-                st.session_state[_STATE_KEY] = {}
+                # Only the completion flag. This used to write
+                # `_STATE_KEY = {}`, which made load_inquiry_responses fall back
+                # to an empty dict — reporting "you have not answered" whenever
+                # the answers themselves could not be read.
+                st.session_state[_COMPLETED_KEY] = True
                 return True
         except Exception:
             pass
@@ -230,24 +288,35 @@ def user_has_completed_inquiry(supabase, user_id: str) -> bool:
 
 def _render_question(q: dict) -> None:
     """One question page: open text → suggestive categories → focus pick."""
+    draft = _draft()
+    saved = draft.get(q["key"]) or {}
+    text_key, cats_key, focus_key = _widget_keys(q["key"])
+    # Re-seed the widgets from the draft, because revisiting this page (Back, or
+    # a retake from the Profile tab) starts from culled widget state.
+    # setdefault, not assignment: on the run right after the user typed, the
+    # widget entry still exists and is the fresher value of the two.
+    st.session_state.setdefault(text_key, saved.get("text", "") or "")
+    st.session_state.setdefault(cats_key, list(saved.get("categories", [])))
+    st.session_state.setdefault(focus_key, list(saved.get("focus", []))[:FOCUS_LIMIT])
+
     with st.container(border=True):
         st.markdown(f"**{q['prompt']}**")
 
         # Step 1 — open-ended response (~200-300 words)
         st.text_area(
             "In your own words",
-            key=f"inquiry_text_{q['key']}",
+            key=text_key,
             placeholder=OPEN_ENDED_HINT,
             height=140,
             label_visibility="collapsed",
         )
 
         # Step 2 — categories (suggestive: selection surfaces related ones)
-        selected = st.session_state.get(f"inquiry_cats_{q['key']}", [])
+        selected = list(st.session_state.get(cats_key) or [])
         st.multiselect(
             "Categories",
             options=category_options(q, selected),
-            key=f"inquiry_cats_{q['key']}",
+            key=cats_key,
             placeholder="Select categories…",
             label_visibility="collapsed",
         )
@@ -270,18 +339,40 @@ def _render_question(q: dict) -> None:
             st.multiselect(
                 "Focus now",
                 options=selected,
-                key=f"inquiry_focus_{q['key']}",
+                key=focus_key,
                 max_selections=FOCUS_LIMIT,
                 placeholder=f"Pick up to {FOCUS_LIMIT}…",
                 label_visibility="collapsed",
             )
 
+    # Mirror this page into the draft. Nothing culls the draft, so this is what
+    # survives to the save step.
+    chosen = list(st.session_state.get(cats_key) or [])
+    focus = [f for f in (st.session_state.get(focus_key) or []) if f in chosen]
+    draft[q["key"]] = {
+        "text": (st.session_state.get(text_key) or "").strip(),
+        "categories": chosen,
+        "focus": focus[:FOCUS_LIMIT],
+    }
+
 
 def _render_priorities_page() -> None:
     """Final page: commit to top priorities for the next period (note #2)."""
+    draft = _draft()
+    saved = draft.get("_priorities") or {}
+    picked = _all_selected_categories()
+    # Seeded rather than passed as `index=`/`default=` so a revisit keeps what
+    # the user chose. Priorities are filtered to what is still selected, because
+    # a stale value outside `options` makes st.multiselect raise.
+    st.session_state.setdefault(
+        "inquiry_priorities",
+        [p for p in saved.get("top", []) if p in picked][:PRIORITY_LIMIT],
+    )
+    st.session_state.setdefault("inquiry_period",
+                                saved.get("period", FOCUS_PERIODS[-1]))
+
     with st.container(border=True):
         st.markdown("**What do you want to focus on next?**")
-        picked = _all_selected_categories()
         if picked:
             st.caption(
                 f"Out of everything you selected, choose your top {PRIORITY_LIMIT} "
@@ -303,24 +394,43 @@ def _render_priorities_page() -> None:
             options=FOCUS_PERIODS,
             key="inquiry_period",
             horizontal=True,
-            index=len(FOCUS_PERIODS) - 1,
         )
         st.caption(
             "When this period ends, Mirra will check in with a fresh round of "
             "questions — informed by your past weeks."
         )
 
+    draft["_priorities"] = {
+        "top": list(st.session_state.get("inquiry_priorities") or [])[:PRIORITY_LIMIT],
+        "period": st.session_state.get("inquiry_period") or FOCUS_PERIODS[-1],
+    }
+
 
 def seed_widget_state(responses: dict) -> None:
-    """Prefill the wizard widgets from saved answers (used when retaking)."""
+    """Prefill the wizard from saved answers (used when retaking).
+
+    Loads the draft and drops any leftover widget entries so each page re-seeds
+    from it. Without the clear, a stale widget value from an earlier visit would
+    win over the answers just loaded from the database.
+    """
+    draft: dict = {}
     for q in INQUIRY_QUESTIONS:
         answer = (responses or {}).get(q["key"]) or {}
-        st.session_state[f"inquiry_text_{q['key']}"] = answer.get("text", "")
-        st.session_state[f"inquiry_cats_{q['key']}"] = list(answer.get("categories", []))
-        st.session_state[f"inquiry_focus_{q['key']}"] = list(answer.get("focus", []))
+        draft[q["key"]] = {
+            "text": answer.get("text", "") or "",
+            "categories": list(answer.get("categories", [])),
+            "focus": list(answer.get("focus", [])),
+        }
+        for key in _widget_keys(q["key"]):
+            st.session_state.pop(key, None)
     priorities = (responses or {}).get("_priorities") or {}
-    st.session_state["inquiry_priorities"] = list(priorities.get("top", []))
-    st.session_state["inquiry_period"] = priorities.get("period", FOCUS_PERIODS[-1])
+    draft["_priorities"] = {
+        "top": list(priorities.get("top", [])),
+        "period": priorities.get("period", FOCUS_PERIODS[-1]),
+    }
+    st.session_state.pop("inquiry_priorities", None)
+    st.session_state.pop("inquiry_period", None)
+    st.session_state[_DRAFT_KEY] = draft
 
 
 def render_insight_inquiry(supabase, user_id: str, on_complete=None,
@@ -361,9 +471,22 @@ def render_insight_inquiry(supabase, user_id: str, on_complete=None,
             if st.button("Save my answers", type="primary", use_container_width=True):
                 saved = save_inquiry_responses(supabase, user_id, collect_responses())
                 st.session_state.pop(_STEP_KEY, None)
+                # The answers now live in _STATE_KEY (and the database when the
+                # write landed). Leaving the draft would let it shadow a later
+                # retake seeded from the database.
+                st.session_state.pop(_DRAFT_KEY, None)
                 if not saved:
-                    st.warning("Saved for this session only — the database isn't "
-                               "migrated for the inquiry yet.")
+                    # Reached when the UPDATE raised, or matched no row. Don't
+                    # name a cause we haven't established — the column does
+                    # exist in production, so the likelier reasons are a lost
+                    # sign-in (RLS matches nothing without a session) or a
+                    # project missing the migration.
+                    st.warning(
+                        "Your answers are held for this session but could not be "
+                        "written to the database. Try signing out and back in; if "
+                        "it keeps happening the users table may be missing the "
+                        "inquiry columns."
+                    )
                 if on_complete:
                     on_complete()
                 st.rerun()
