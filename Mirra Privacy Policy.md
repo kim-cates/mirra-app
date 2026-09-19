@@ -5,8 +5,9 @@ Last updated: September 2026
 **What we collect:** Your daily reflections (text, mood rating), and — only for
 the sources you choose to connect — health and activity data from those
 accounts. Today those are Oura (sleep, readiness, activity, HRV), Whoop
-(recovery, sleep, day strain), Fitbit (sleep, resting heart rate, HRV, steps)
-and Spotify (listening activity). Connecting a source is optional, and
+(recovery, sleep, day strain), Fitbit (sleep, resting heart rate, HRV, steps),
+Strava (workouts — duration, distance, heart rate; we never store routes or GPS
+coordinates) and Spotify (listening activity). Connecting a source is optional, and
 disconnecting it stops any further collection.
 
 **Where it's stored:** Supabase (encrypted at rest). Your data is scoped to your
