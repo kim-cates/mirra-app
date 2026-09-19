@@ -1858,11 +1858,22 @@ def render_connections_tab(supabase, user_id: str, show_header: bool = True) -> 
             "action_url": oura_action_url,
             "action_label": oura_action_label,
         },
-        {"name": "Whoop", "description": "Coming soon: connect Whoop for recovery and strain insights.", "status": "Not configured", "action_url": None},
-        {"name": "Strava", "description": "Coming soon: connect Strava to sync workouts and training data.", "status": "Not configured", "action_url": None},
-        # MIR-3: live Spotify connection via the provider framework. Falls back to
-        # a "Not configured" card if secrets or the connections tables are missing,
-        # so this card can never break the tab.
+        # MIR-3: live connections via the provider framework. Each card falls
+        # back to "Not configured" if its secrets or the connections tables are
+        # missing, so none of them can break the tab — Whoop/Fitbit/Strava stay
+        # placeholders until their vendor apps are registered.
+        connections_ui.provider_card(
+            supabase, user_id, "whoop",
+            description="Connect Whoop for recovery and strain insights.",
+        ),
+        connections_ui.provider_card(
+            supabase, user_id, "fitbit",
+            description="Connect Fitbit for sleep, heart rate, and activity data.",
+        ),
+        connections_ui.provider_card(
+            supabase, user_id, "strava",
+            description="Connect Strava to see how workouts and training load line up with how you feel.",
+        ),
         connections_ui.provider_card(
             supabase, user_id, "spotify",
             description="Connect Spotify for listening and mood correlations.",

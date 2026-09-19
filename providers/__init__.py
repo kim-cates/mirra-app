@@ -36,6 +36,7 @@ from . import registry
 from . import spotify as _spotify  # noqa: F401  (MVP: second provider, #28)
 from . import whoop as _whoop      # noqa: F401  (third provider, full sync)
 from . import fitbit as _fitbit    # noqa: F401  (fourth provider, full sync)
+from . import strava as _strava    # noqa: F401  (fifth provider, full sync)
 
 __all__ = [
     "registry",

@@ -31,6 +31,33 @@ daily summaries are enough.
 
 Afterwards, `FITBIT_CLIENT_ID` and `FITBIT_CLIENT_SECRET` go into secrets.
 
+## Strava — can be done today, no device needed
+
+Any free Strava account can register one API application at
+<https://www.strava.com/settings/api> (use the shared Mirra account, per the
+decision above). No review queue for basic read scopes.
+
+| Form field | Value |
+|---|---|
+| Application Name | Mirra |
+| Category | Wellness |
+| Website | https://mirra-reflections.streamlit.app/ |
+| Application Description | Daily reflection app that shows how workouts and training load line up with how you felt. |
+| Authorization Callback Domain | `mirra-reflections.streamlit.app` — **host only**, no scheme or path (the full `OAUTH_REDIRECT_URI` is sent at authorize time and must live on this domain; add `localhost` here too for local dev) |
+
+Notes:
+
+- The form asks for an app icon before it issues credentials — any square PNG
+  works to start.
+- Scopes are requested by the code (`read,activity:read_all`, comma-delimited —
+  a Strava quirk). The consent screen lets the athlete untick private
+  activities; sync then simply skips them.
+- New apps start with a **one-athlete limit** ("your app can connect to 1
+  athlete") until you request a limit increase in the same settings page —
+  fine for the first test, needs the bump before the wider test group.
+
+Afterwards, `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` go into secrets.
+
 ## Whoop — blocked until someone owns the device
 
 WHOOP's developer platform logs in with a WHOOP account, and a WHOOP account
@@ -50,6 +77,8 @@ OAUTH_REDIRECT_URI = "https://mirra-reflections.streamlit.app/"   # one callback
 TOKEN_ENC_KEY      = "..."      # Fernet key; tokens are encrypted with it before they hit the DB
 FITBIT_CLIENT_ID     = "..."
 FITBIT_CLIENT_SECRET = "..."
+STRAVA_CLIENT_ID     = "..."
+STRAVA_CLIENT_SECRET = "..."
 ```
 
 Two things that bite:
