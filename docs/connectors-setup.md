@@ -7,7 +7,32 @@ Decision (2026-09-07): all vendor developer apps live on a **shared Mirra
 product account**, not on anyone's personal one — a Fitbit app cannot be shared
 with a team, so a personal owner is a single point of failure.
 
-## Fitbit — can be done today, no device needed
+## ⚠ Fitbit — the legacy platform is being shut down this month
+
+**Read before filling anything in.** Google is turning off the legacy Fitbit Web
+API — the one `providers/fitbit.py` is written against — in **September 2026**,
+described by Google as a hard cutoff, not a gradual deprecation. Its replacement
+is the **Google Health API** (<https://developers.google.com/health>), which is
+an aggregation layer over a Google account rather than a Fitbit-specific API:
+one OAuth connection returns Fitbit, Pixel Watch and third-party device data.
+
+Consequences for us:
+
+- OAuth tokens do not carry over. Every connected user re-consents through
+  Google.
+- All Google Health API scopes are **Restricted**, so access requires a privacy
+  and security review — unlike the legacy Fitbit form, which issued credentials
+  immediately.
+- Third-party migration guides state that **new registrations on the legacy
+  platform are already closed**. That is not confirmed by a first-party page;
+  the fastest check is to open <https://dev.fitbit.com/apps/new> while signed in
+  and see whether the form still submits.
+
+The section below documents the legacy form as it stood, and is kept only in
+case registrations are still open and a short-lived credential is useful for
+testing. Do not treat it as the path to production.
+
+## Fitbit (legacy platform) — form reference
 
 The developer account is a plain **Google account** (Workspace accounts are not
 supported). Register at <https://dev.fitbit.com/apps/new>.
