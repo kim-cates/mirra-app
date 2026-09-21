@@ -18,6 +18,7 @@ from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
 from onboarding import should_run_onboarding
 from profile_form import render_profile_form, user_has_completed_profile
 from profile_tab import render_profile_tab
+from voice_input import merge_transcript, render_voice_input, resolve_transcriber
 from simples import render_simples_tab
 from personalized_insights import render_personalized_insights_tab
 
@@ -3705,9 +3706,22 @@ def render_daily_reflection_tab(rows):
         st.markdown(f'<div style="text-align:right;padding-top:4px"><span class="streak-badge">{streak_lbl}</span></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-label">What\'s on your mind?</div>', unsafe_allow_html=True)
-    content = st.text_area("reflection", value=default_content,
-                           placeholder="Write about your day, what you're feeling, what went well or didn't…",
-                           height=140, label_visibility="collapsed")
+    # Voice-to-text: the mic sits BELOW the text box (text_slot pins the box's
+    # position) but its code runs first, so a fresh transcript can be merged
+    # into the box's session_state before the widget instantiates — Streamlit
+    # forbids touching a widget's state after it exists. No STT backend
+    # configured → render_voice_input draws nothing and the page is unchanged.
+    if "reflection_content" not in st.session_state:
+        st.session_state["reflection_content"] = default_content
+    text_slot = st.container()
+    transcript = render_voice_input(resolve_transcriber(st.secrets))
+    if transcript:
+        st.session_state["reflection_content"] = merge_transcript(
+            st.session_state["reflection_content"], transcript)
+    with text_slot:
+        content = st.text_area("reflection", key="reflection_content",
+                               placeholder="Write about your day, what you're feeling, what went well or didn't…",
+                               height=140, label_visibility="collapsed")
 
     st.markdown('<div class="section-label">Mood (1–10)</div>', unsafe_allow_html=True)
 
