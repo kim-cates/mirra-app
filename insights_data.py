@@ -159,7 +159,8 @@ def _reflection_frame(rows: list[dict]) -> pd.DataFrame:
 def _oura_frame(rows: list[dict]) -> pd.DataFrame:
     out = pd.DataFrame(index=_to_index(rows))
     for col in ("sleep_score", "readiness_score", "activity_score",
-                "hrv_avg", "resting_hr", "steps"):
+                "hrv_avg", "resting_hr", "steps",
+                "rem_sleep_min", "deep_sleep_min"):
         out[col] = [_num(r.get(col)) for r in rows]
     secs = [_num(r.get("total_sleep_seconds")) for r in rows]
     out["sleep_hours"] = [None if s is None else s / 3600.0 for s in secs]
@@ -404,6 +405,7 @@ WINDOW_OPTIONS = {
     "Last 30 days": 30,
     "Last 90 days": 90,
     "Last 6 months": 182,
+    "Last year": 365,
     "All time": None,
 }
 

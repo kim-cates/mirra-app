@@ -18,6 +18,7 @@ from insight_inquiry import render_insight_inquiry, user_has_completed_inquiry
 from onboarding import should_run_onboarding
 from profile_form import render_profile_form, user_has_completed_profile
 from profile_tab import render_profile_tab
+import insight_style
 from voice_input import merge_transcript, render_voice_input, resolve_transcriber
 from simples import render_simples_tab
 from personalized_insights import render_personalized_insights_tab
@@ -3235,6 +3236,9 @@ def render_reflection_trends_tab(rows, oura_by_date):
         kw_freq[k] = kw_freq.get(k, 0) + 1
     top_kws = sorted(kw_freq, key=kw_freq.get, reverse=True)[:10]
 
+    style = insight_style.load_insight_style(supabase, st.session_state["user_id"])
+    st.caption(f"Report style: **{insight_style.LABELS[style]}** — change it in "
+               "Profile → Personalization.")
     if st.button("Generate insight report", type="primary"):
         with st.spinner("Analyzing your reflections…"):
             prompt = f"""You are a thoughtful personal analytics assistant for a journaling app called Mirra.
@@ -3251,14 +3255,16 @@ Overall stats:
 Biometric averages and mood correlations (Pearson r, computed across days where both mood and the metric exist):
 {oura_block}
 
-Write a warm, insightful personal trend report with exactly these 4 sections:
+Write an insightful personal trend report with exactly these 4 sections:
 
 1. **Mood patterns** — describe specific mood trends, highs, lows, and what seems to drive them. Where the data supports it, link mood shifts to biometrics (e.g. "your lowest moods cluster on poor-sleep nights" — but only say this if the dates actually show it).
 2. **Recurring themes** — what topics and phrases keep showing up, and what they might mean
 3. **Notable correlations** — specific connections like "your mood drops when X appears" or "high-HRV days tend to mention Y." Use the correlation numbers above as a guide: only call something a real correlation if r is at least 0.3 in magnitude. If the strongest correlation is weak, say so honestly rather than inventing one.
 4. **One thing to watch** — a gentle, actionable observation to carry forward
 
-Be specific and reference actual keywords, dates, and biometric values from the data. Sound like a perceptive friend, not a clinical report. Keep each section to 2-4 sentences. Do not over-claim causation — Oura biometrics and self-reported mood are correlated signals, not proof one causes the other."""
+Be specific and reference actual keywords, dates, and biometric values from the data. Keep each section to 2-4 sentences. Do not over-claim causation — Oura biometrics and self-reported mood are correlated signals, not proof one causes the other.
+
+{insight_style.prompt_guidance(style)}"""
 
             response = ai_client.messages.create(
                 model="claude-sonnet-4-20250514",
