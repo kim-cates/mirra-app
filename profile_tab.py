@@ -1,8 +1,10 @@
 """Profile tab (MIR-1 #18) — the one place a signed-in user manages their account.
 
-Four sections, all reachable without leaving the tab:
+Five sections, all reachable without leaving the tab:
   • About you   — the MIR-1 profile fields, prefilled from the database.
   • Insight focus — what the onboarding inquiry captured, retakeable.
+  • Personalization — how insights are presented (data-driven / hybrid /
+                      insight-focused) and which areas to focus on.
   • Connections — external data sources (Oura today, more later) + sync settings.
   • Account     — username, member since, password change, sign out.
 
@@ -16,7 +18,10 @@ from datetime import datetime
 import streamlit as st
 
 import auth
+import focus_areas
 import insight_inquiry
+import insight_style
+import insights_data as idata
 import oura_ui
 from intro_page import render_intro_page
 from profile_form import render_profile_form
@@ -45,8 +50,8 @@ def render_profile_tab(supabase, user_id: str, render_connections=None) -> None:
         unsafe_allow_html=True,
     )
 
-    about_tab, focus_tab, connections_tab, account_tab = st.tabs(
-        ["About you", "Insight focus", "Connections", "Account"]
+    about_tab, focus_tab, personalization_tab, connections_tab, account_tab = st.tabs(
+        ["About you", "Insight focus", "Personalization", "Connections", "Account"]
     )
 
     with about_tab:
@@ -55,6 +60,9 @@ def render_profile_tab(supabase, user_id: str, render_connections=None) -> None:
     with focus_tab:
         _render_focus_section(supabase, user_id)
 
+    with personalization_tab:
+        _render_personalization_section(supabase, user_id)
+
     with connections_tab:
         if render_connections is not None:
             render_connections(supabase, user_id, show_header=False)
@@ -62,6 +70,42 @@ def render_profile_tab(supabase, user_id: str, render_connections=None) -> None:
 
     with account_tab:
         _render_account_section(supabase, user_id)
+
+
+# ── Personalization ───────────────────────────────────────────────────────────
+_PERSONALIZATION_RESULT_KEY = "personalization_save_result"
+
+
+def _save_personalization(supabase, user_id: str) -> None:
+    # A submit callback, not code after the button: saving the style also
+    # updates the Simples toggle, which has already rendered by the time this
+    # tab's code runs, and Streamlit only allows that change before the run.
+    style_saved = insight_style.save_from_picker(supabase, user_id)
+    areas_saved = focus_areas.save_from_picker(supabase, user_id)
+    st.session_state[_PERSONALIZATION_RESULT_KEY] = style_saved and areas_saved
+
+
+def _render_personalization_section(supabase, user_id: str) -> None:
+    """Insight style + focus areas, saved together by one button."""
+    with st.form("personalization_form"):
+        insight_style.render_style_field(supabase, user_id)
+        st.divider()
+        focus_areas.render_focus_field(
+            supabase, user_id,
+            priorities=idata.load_priorities(supabase, user_id),
+            df=idata.load_daily_frame(supabase, user_id),
+        )
+        st.form_submit_button("Save changes", type="primary",
+                              on_click=_save_personalization,
+                              args=(supabase, user_id))
+
+    result = st.session_state.pop(_PERSONALIZATION_RESULT_KEY, None)
+    if result is True:
+        st.success("Saved. Your insights will follow these settings.")
+    elif result is False:
+        st.warning("Your changes apply for this session but couldn't be saved. "
+                   "The users table may be missing the personalization columns — "
+                   "see docs/migrations/personalization.sql.")
 
 
 # ── Insight focus ─────────────────────────────────────────────────────────────
